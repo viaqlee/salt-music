@@ -52,7 +52,7 @@ powershell -ExecutionPolicy Bypass -File installer\build.ps1
 powershell -ExecutionPolicy Bypass -File installer\build.ps1 -BundleTools
 ```
 
-Релизы собирает GitHub Actions (`.github/workflows/release-windows.yml`) по тегу `v<версия>`.
+Релизы собирает GitHub Actions (`.github/workflows/release.yml`) по тегу `v<версия>`: установщик и portable-zip для Windows и `.run` для Linux.
 
 ## Linux
 

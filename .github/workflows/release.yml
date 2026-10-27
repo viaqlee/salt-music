@@ -1,0 +1,145 @@
+# Builds every release file and attaches them to a GitHub release:
+#   Windows: the installer and a portable zip;
+#   Linux:   the self-extracting .run installer.
+# Runs for a pushed tag v*, or by hand (Actions -> Release -> Run workflow).
+# The release is published only after both builds and their tests pass.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.2.0 (created from the chosen branch if missing)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that the tag matches the version
+        id: check
+        run: |
+          v=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' salt_music/__init__.py)
+          if [ "v$v" != "$TAG" ]; then echo "::error::tag $TAG does not match __version__ $v"; exit 1; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Tests
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pytest -q
+
+      - name: Build
+        shell: pwsh
+        run: |
+          python -m venv .build-venv   # build.ps1 reuses it instead of looking for the py launcher
+          powershell -ExecutionPolicy Bypass -File installer\build.ps1
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\SaltMusic -DestinationPath "dist\SaltMusic-$env:VERSION-portable.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          if-no-files-found: error
+          path: |
+            dist/SaltMusic-Setup-${{ env.VERSION }}.exe
+            dist/SaltMusic-${{ env.VERSION }}-portable.zip
+
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Tests
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pytest -q
+
+      - name: Build
+        run: installer/build.sh "$VERSION"
+
+      - name: Try the installer
+        # a throwaway HOME: install, check what it made, then uninstall
+        run: |
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          run="dist/SaltMusic-Setup-$VERSION.run"
+          bash "$run" --unattended
+          app="$HOME/.local/share/salt-music/app"
+          test -x "$HOME/.local/bin/salt-music"
+          test -f "$HOME/.local/share/applications/salt-music.desktop"
+          (cd "$app" && .venv/bin/python -c "import salt_music, salt_music.ui.app; assert salt_music.__version__ == '$VERSION'")
+          bash "$run" --uninstall --unattended
+          test ! -e "$app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          if-no-files-found: error
+          path: dist/SaltMusic-Setup-${{ env.VERSION }}.run
+
+  publish:
+    needs: [version, windows, linux]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          files=(SaltMusic-Setup-"$VERSION".exe SaltMusic-"$VERSION"-portable.zip SaltMusic-Setup-"$VERSION".run)
+          sha256sum "${files[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish release
+        run: |
+          files=(dist/SaltMusic-Setup-"$VERSION".exe dist/SaltMusic-"$VERSION"-portable.zip
+                 dist/SaltMusic-Setup-"$VERSION".run dist/SHA256SUMS.txt)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            sed "s/{version}/$VERSION/g" installer/RELEASE_NOTES.md > "$RUNNER_TEMP/notes.md"
+            gh release create "$TAG" "${files[@]}" --title "Salt Music $VERSION" \
+              --target "$GITHUB_SHA" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
