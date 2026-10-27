@@ -174,6 +174,39 @@ def test_winget_package_folders(tmp_path):
     assert tools._winget_package_dirs(tmp_path / "missing") == []
 
 
+def test_first_path_of_registry_commands():
+    assert tools._first_path('"C:\\Program Files\\MPV Player\\mpv.exe" "%1"') == "C:\\Program Files\\MPV Player\\mpv.exe"
+    assert tools._first_path("C:\\mpv\\mpv.exe,0") == "C:\\mpv\\mpv.exe"
+    assert tools._first_path("C:\\x\\unins000.exe /S") == "C:\\x\\unins000.exe"
+    assert tools._first_path("") == ""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows registry")
+def test_program_found_through_registry(tmp_path, monkeypatch):
+    """mpv from winget lands in Program Files\\MPV Player, known only to the registry."""
+    import winreg
+
+    folder = tmp_path / "MPV Player"
+    folder.mkdir()
+    (folder / "mpv.exe").write_bytes(b"MZ")
+    sub = r"SOFTWARE\Classes\Applications\mpv.exe\shell\open\command"
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, sub) as k:
+        winreg.SetValueEx(k, "", 0, winreg.REG_SZ, f'"{folder / "mpv.exe"}" "%1"')
+    try:
+        assert folder in tools._registry_programs()
+        monkeypatch.setattr(tools, "_registry_path", lambda: [])
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(tools.shutil, "which", lambda name: None)
+        tools.refresh()
+        assert tools.find(tools.MPV)  # this one, unless an mpv sits earlier in the search order
+        assert folder in tools.search_dirs()
+    finally:
+        for key in (sub, r"SOFTWARE\Classes\Applications\mpv.exe\shell\open", r"SOFTWARE\Classes\Applications\mpv.exe\shell",
+                    r"SOFTWARE\Classes\Applications\mpv.exe"):
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
+        tools.refresh()
+
+
 def test_settings_keep_only_known_tools():
     from salt_music.config import Settings
 

@@ -3,7 +3,7 @@
 ; Classic wizard, per-user install (no administrator rights needed).
 
 #ifndef AppVersion
-  #define AppVersion "0.3.1"
+  #define AppVersion "0.3.2"
 #endif
 #define AppName "Salt Music"
 #define AppExe "SaltMusic.exe"
@@ -62,12 +62,14 @@ ru.ToolDeno=Deno — нужен YouTube для расшифровки ссыло
 en.ToolDeno=Deno — YouTube needs it to decode links
 ru.ToolAdb=Android Platform Tools (adb) — отправка на телефон
 en.ToolAdb=Android Platform Tools (adb) — sending to the phone
-ru.ToolMpv=mpv — встроенный плеер
-en.ToolMpv=mpv — built-in player
+ru.ToolMpv=mpv — встроенный плеер (Windows спросит права администратора)
+en.ToolMpv=mpv — built-in player (Windows will ask for administrator rights)
 ru.Installing=Установка %1…
 en.Installing=Installing %1…
 ru.NoWinget=winget не найден: недостающие программы можно установить позже, подсказки есть в настройках приложения.
 en.NoWinget=winget was not found: install the missing tools later, the app's settings show how.
+ru.ToolsFailed=Не удалось установить: %1.%n%nПовторите позже через winget (подсказки есть в настройках Salt Music → «Прочее» → «Программы») или укажите там путь к программе. Подробности в журнале установки.
+en.ToolsFailed=Could not install: %1.%n%nTry again later with winget (Salt Music settings → Other → Programs show how) or point to the program there. The setup log has details.
 ru.RemoveData=Удалить также настройки, историю и журналы Salt Music?%n%nСкачанная музыка не удаляется.
 en.RemoveData=Also delete Salt Music settings, history and logs?%n%nDownloaded music is not deleted.
 
@@ -77,7 +79,7 @@ Name: "tools"; Description: "{cm:ToolsGroup}"; Check: NeedsAnyTool
 Name: "tools\ffmpeg"; Description: "{cm:ToolFFmpeg}"; Check: NeedsTool('ffmpeg')
 Name: "tools\deno"; Description: "{cm:ToolDeno}"; Check: NeedsTool('deno')
 Name: "tools\adb"; Description: "{cm:ToolAdb}"; Check: NeedsTool('adb')
-Name: "tools\mpv"; Description: "{cm:ToolMpv}"; Check: NeedsTool('mpv'); Flags: unchecked
+Name: "tools\mpv"; Description: "{cm:ToolMpv}"; Check: NeedsTool('mpv')
 
 [Files]
 Source: "..\dist\SaltMusic\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -96,15 +98,48 @@ Filename: "{app}\{#AppExe}"; Flags: nowait; Check: RelaunchAfterUpdate
 Type: filesandordirs; Name: "{app}\bin"
 
 [Code]
+function RegistryPath(Root: Integer; Exe: String): String;
+begin
+  { App Paths: where installers like the one of mpv register their exe }
+  if not RegQueryStringValue(Root, 'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\' + Exe, '', Result) then
+    Result := '';
+  if (Result = '') and
+     RegQueryStringValue(Root, 'SOFTWARE\Classes\Applications\' + Exe + '\shell\open\command', '', Result) then
+  begin
+    if Copy(Result, 1, 1) = '"' then
+    begin
+      Delete(Result, 1, 1);
+      Result := Copy(Result, 1, Pos('"', Result) - 1);
+    end;
+  end;
+end;
+
 function ToolPresent(Name: String): Boolean;
 var
-  Local: String;
+  Local, Exe, Reg: String;
 begin
+  { roughly what the app itself checks, see salt_music/tools.py }
   Local := ExpandConstant('{localappdata}');
+  Exe := Name + '.exe';
   Result :=
-    FileExists(Local + '\Microsoft\WinGet\Links\' + Name + '.exe') or
-    FileExists(Local + '\SaltMusic\bin\' + Name + '.exe') or
-    (FileSearch(Name + '.exe', GetEnv('PATH')) <> '');
+    FileExists(Local + '\Microsoft\WinGet\Links\' + Exe) or
+    FileExists(ExpandConstant('{commonpf64}') + '\WinGet\Links\' + Exe) or
+    FileExists(Local + '\SaltMusic\bin\' + Exe) or
+    FileExists(ExpandConstant('{commonpf64}') + '\MPV Player\' + Exe) or
+    FileExists(GetEnv('USERPROFILE') + '\scoop\shims\' + Exe) or
+    (FileSearch(Exe, GetEnv('PATH')) <> '');
+  { what winget just put on PATH is only in the registry, not in our environment yet }
+  if not Result and RegQueryStringValue(HKCU, 'Environment', 'Path', Reg) then
+    Result := FileSearch(Exe, Reg) <> '';
+  if not Result and RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', Reg) then
+    Result := FileSearch(Exe, Reg) <> '';
+  if not Result then
+  begin
+    Reg := RegistryPath(HKCU, Exe);
+    if Reg = '' then
+      Reg := RegistryPath(HKLM, Exe);
+    Result := (Reg <> '') and FileExists(Reg);
+  end;
 end;
 
 function RelaunchAfterUpdate: Boolean;
@@ -135,7 +170,10 @@ begin
     Result := FileSearch('winget.exe', GetEnv('PATH'));
 end;
 
-procedure Winget(Id, Title: String);
+var
+  Failed: String;
+
+procedure Winget(Id, Title, Tool: String);
 var
   Code: Integer;
   Exe: String;
@@ -144,10 +182,18 @@ begin
   if Exe = '' then
     Exit;
   WizardForm.StatusLabel.Caption := FmtMessage(CustomMessage('Installing'), [Title]);
-  { fixed package ids only: nothing from the user ends up on this command line }
-  Exec(Exe, 'install --id ' + Id + ' --exact --silent --scope user --accept-package-agreements --accept-source-agreements --disable-interactivity',
+  { fixed package ids only: nothing from the user ends up on this command line.
+    No --scope: the zip packages (ffmpeg, deno, adb) go to the user anyway, and
+    the mpv package is a machine-wide installer that a user scope would rule out. }
+  Exec(Exe, 'install --id ' + Id + ' --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity',
        '', SW_HIDE, ewWaitUntilTerminated, Code);
   Log(Format('winget %s -> %d', [Id, Code]));
+  if not ToolPresent(Tool) then
+  begin
+    if Failed <> '' then
+      Failed := Failed + ', ';
+    Failed := Failed + Title;
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -161,10 +207,13 @@ begin
     SuppressibleMsgBox(CustomMessage('NoWinget'), mbInformation, MB_OK, IDOK);
     Exit;
   end;
-  if WizardIsTaskSelected('tools\ffmpeg') then Winget('Gyan.FFmpeg', 'FFmpeg');
-  if WizardIsTaskSelected('tools\deno') then Winget('DenoLand.Deno', 'Deno');
-  if WizardIsTaskSelected('tools\adb') then Winget('Google.PlatformTools', 'adb');
-  if WizardIsTaskSelected('tools\mpv') then Winget('shinchiro.mpv', 'mpv');
+  Failed := '';
+  if WizardIsTaskSelected('tools\ffmpeg') then Winget('Gyan.FFmpeg', 'FFmpeg', 'ffmpeg');
+  if WizardIsTaskSelected('tools\deno') then Winget('DenoLand.Deno', 'Deno', 'deno');
+  if WizardIsTaskSelected('tools\adb') then Winget('Google.PlatformTools', 'adb', 'adb');
+  if WizardIsTaskSelected('tools\mpv') then Winget('shinchiro.mpv', 'mpv', 'mpv');
+  if Failed <> '' then
+    SuppressibleMsgBox(FmtMessage(CustomMessage('ToolsFailed'), [Failed]), mbError, MB_OK, IDOK);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

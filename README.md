@@ -31,8 +31,7 @@
 | Android Platform Tools (adb) | `Google.PlatformTools` |
 | mpv | `shinchiro.mpv` |
 
-Есть и вариант без установки: `SaltMusic-<версия>-portable.zip`. Программу, поставленную
-позже, Salt Music найдёт сама примерно за 10 секунд, перезапуск не нужен.
+Программу, поставленную позже, Salt Music найдёт сама примерно за 10 секунд, перезапуск не нужен.
 
 ### Из исходников
 
@@ -54,7 +53,8 @@ powershell -ExecutionPolicy Bypass -File installer\build.ps1
 powershell -ExecutionPolicy Bypass -File installer\build.ps1 -BundleTools
 ```
 
-Релизы собирает GitHub Actions (`.github/workflows/release.yml`) по тегу `v<версия>`: установщик и portable-zip для Windows и `.run` для Linux.
+Релизы собирает GitHub Actions (`.github/workflows/release.yml`) по тегу `v<версия>`: установщик для Windows и `.run` для Linux.
+Пуш в `main` собирает и проверяет всё то же самое, но ничего не публикует.
 
 ## Linux
 
@@ -106,7 +106,8 @@ python -m venv .venv
 ## Программа не находит ffmpeg, adb, mpv или Deno
 
 Программы ищутся в папке Salt Music, в папках winget (и в `Links`, и в распакованных
-пакетах), scoop, chocolatey, Android SDK, `Program Files`, а на Linux ещё в `~/.local/bin`,
+пакетах), scoop, chocolatey, Android SDK, `Program Files` (mpv из winget стоит в `Program Files\MPV Player`)
+и там, куда программы записаны в реестре Windows (App Paths, «Открыть с помощью», список установленных). На Linux ещё в `~/.local/bin`,
 `/usr/local/bin`, `/usr/bin`, `/snap/bin`. Потом в PATH; на Windows PATH читается и из реестра,
 так что программа, поставленная при открытом Salt Music, находится без перезапуска системы.
 
@@ -122,7 +123,7 @@ Salt Music сам проверяет GitHub при запуске и раз в �
 Настройки, музыка и история не трогаются. Если новее только yt-dlp, обновляется он.
 
 Так обновляются копии, поставленные установщиком (`.exe` на Windows, `.run` на Linux),
-начиная с 0.3.0. Для переносной версии и запуска из исходников кнопка открывает страницу релиза.
+начиная с 0.3.0. Для запуска из исходников кнопка открывает страницу релиза.
 
 ## Где что хранится
 

@@ -11,7 +11,7 @@ launch()   starts the installer and leaves it to replace the program:
            Linux:   a small shell waits until this process is gone, runs the .run
                     installer unattended into the same folder and starts the app.
 
-A portable copy or a run from sources can't be replaced this way: for those the
+A run from sources (or an old portable copy) can't be replaced this way: for those the
 release page is opened instead.
 """
 
@@ -82,7 +82,7 @@ def is_newer(remote: str, local: str) -> bool:
 # ---------- how this copy was installed ----------
 
 def install_kind() -> str | None:
-    """"windows" (Inno Setup install), "linux" (.run install) or None (portable / sources)."""
+    """"windows" (Inno Setup install), "linux" (.run install) or None (sources, old portable copies)."""
     here = app_dir()
     if IS_WINDOWS:
         return "windows" if FROZEN and (here / "unins000.exe").is_file() else None

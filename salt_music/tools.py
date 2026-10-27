@@ -5,8 +5,10 @@ Lookup order:
 2. the program's own bin folder (the installer puts bundled tools there) and
    DATA_DIR/bin;
 3. the usual install places: on Windows winget (its Links folders and the
-   unpacked packages), scoop, chocolatey, the Android SDK, Program Files; on
-   Linux ~/.local/bin, /usr/local/bin, /usr/bin, the Android SDK and so on;
+   unpacked packages), scoop, chocolatey, the Android SDK, Program Files
+   (winget's mpv goes to Program Files\\MPV Player), and the folders the registry
+   knows (App Paths, "Open with", the uninstall list); on Linux ~/.local/bin,
+   /usr/local/bin, /usr/bin, the Android SDK and so on;
 4. PATH. On Windows the PATH saved in the registry is read too: a program
    installed while Salt Music (or the setup that started it) was running is not
    in our inherited PATH yet.
@@ -96,9 +98,79 @@ def _winget_package_dirs(root: Path) -> list[Path]:
     return found
 
 
+def _first_path(command: str) -> str:
+    """'"C:\\x\\mpv.exe" "%1"' or 'C:\\x\\mpv.exe,0' -> 'C:\\x\\mpv.exe'."""
+    command = command.strip()
+    if command.startswith('"'):
+        return command[1:].split('"', 1)[0]
+    return command.split(",", 1)[0].split(" /", 1)[0].strip()
+
+
+def _reg_values(root, sub: str, names: tuple[str, ...]) -> dict[str, str]:
+    import winreg
+
+    out = {}
+    try:
+        with winreg.OpenKey(root, sub) as k:
+            for n in names:
+                try:
+                    v, _ = winreg.QueryValueEx(k, n)
+                except OSError:
+                    continue
+                if isinstance(v, str) and v.strip():
+                    out[n] = os.path.expandvars(v.strip())
+    except OSError:
+        pass
+    return out
+
+
+def _reg_subkeys(root, sub: str) -> list[str]:
+    import winreg
+
+    try:
+        with winreg.OpenKey(root, sub) as k:
+            return [winreg.EnumKey(k, i) for i in range(winreg.QueryInfoKey(k)[0])]
+    except OSError:
+        return []
+
+
+def _registry_programs() -> list[Path]:
+    """Windows: folders of installed programs that don't put themselves on PATH.
+
+    The mpv package of winget, for one, goes to Program Files\\MPV Player and is
+    only listed in the registry: under App Paths, "Open with" and Uninstall.
+    """
+    import winreg
+
+    hives = (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE)
+    files: list[str] = []
+    for name in (*CONFIGURABLE, FFPROBE):
+        exe = name + ".exe"
+        for hive in hives:
+            files.append(_reg_values(hive, rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe}",
+                                     ("",)).get("", ""))
+            cmd = _reg_values(hive, rf"SOFTWARE\Classes\Applications\{exe}\shell\open\command", ("",))
+            files.append(_first_path(cmd.get("", "")))
+    folders = [Path(f).parent for f in files if f and os.path.isabs(f)]
+    uninstall = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    for hive, sub in ((winreg.HKEY_CURRENT_USER, uninstall), (winreg.HKEY_LOCAL_MACHINE, uninstall),
+                      (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")):
+        for key in _reg_subkeys(hive, sub):
+            v = _reg_values(hive, rf"{sub}\{key}", ("DisplayIcon", "InstallLocation"))
+            if "InstallLocation" in v:
+                folders.append(Path(v["InstallLocation"].strip('"')))
+            icon = _first_path(v.get("DisplayIcon", ""))
+            if icon and Path(icon).stem.lower() in (*CONFIGURABLE, FFPROBE):
+                folders.append(Path(icon).parent)
+    # only folders that really hold one of our programs: the uninstall list is long
+    wanted = [n + ".exe" for n in (*CONFIGURABLE, FFPROBE)]
+    return [f for f in dict.fromkeys(folders) if f.is_absolute() and any((f / w).is_file() for w in wanted)]
+
+
 def _windows_dirs() -> list[Path]:
     local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     program_files = Path(os.environ.get("ProgramFiles") or r"C:\Program Files")
+    program_files_x86 = Path(os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)")
     program_data = Path(os.environ.get("ProgramData") or r"C:\ProgramData")
     return [
         local / "Microsoft" / "WinGet" / "Links",
@@ -112,8 +184,12 @@ def _windows_dirs() -> list[Path]:
         Path.home() / ".deno" / "bin",
         program_files / "ffmpeg" / "bin",
         Path("C:/ffmpeg/bin"),
+        program_files / "MPV Player",  # winget shinchiro.mpv
+        program_files_x86 / "MPV Player",
         program_files / "mpv",
         local / "Programs" / "mpv",
+        Path.home() / "scoop" / "apps" / "mpv" / "current",
+        *_registry_programs(),
         *_registry_path(),
     ]
 
