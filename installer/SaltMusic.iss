@@ -3,7 +3,7 @@
 ; Classic wizard, per-user install (no administrator rights needed).
 
 #ifndef AppVersion
-  #define AppVersion "0.3.2"
+  #define AppVersion "0.3.3"
 #endif
 #define AppName "Salt Music"
 #define AppExe "SaltMusic.exe"

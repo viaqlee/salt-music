@@ -138,6 +138,8 @@ STRINGS: dict[str, dict[str, str]] = {
     "phone_help": ("Включите «Отладку по USB» в настройках разработчика и подключите кабель.",
                    "Enable “USB debugging” in developer options and plug in the cable."),
     "adb_missing": ("adb не установлен: {cmd}", "adb is not installed: {cmd}"),
+    "adb_timeout": ("Телефон не ответил вовремя: проверьте кабель и экран телефона",
+                    "The phone did not answer in time: check the cable and the phone screen"),
     "bad_address": ("Адрес должен быть вида 192.168.1.5:37000", "The address should look like 192.168.1.5:37000"),
     "push_title": ("На телефон: {name}", "To phone: {name}"),
     "push_done": ("Отправлено {sent}, уже было {skipped}", "Sent {sent}, already there {skipped}"),

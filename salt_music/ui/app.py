@@ -28,6 +28,11 @@ from .sidebar import Sidebar
 log = logging.getLogger(__name__)
 
 
+def _adb_text(err: adb.AdbError) -> str:
+    """adb errors are either our i18n keys (adb_missing, adb_timeout...) or adb's own words."""
+    return t(str(err)) if str(err) in i18n.STRINGS else str(err)
+
+
 class App:
     def __init__(self, page: ft.Page):
         self.page = page
@@ -461,7 +466,7 @@ class App:
                 devs = await asyncio.to_thread(adb.devices)
             except adb.AdbError as err:
                 devs = []
-                self._phone_text = (str(err), False)
+                self._phone_text = (_adb_text(err), False)
             ready = [d for d in devs if d.state == "device"]
             self.device = ready[0] if ready else None
             if self.device:
@@ -490,7 +495,7 @@ class App:
         try:
             await asyncio.to_thread(adb.connect, address)
         except adb.AdbError as err:
-            self._snack(t("wifi_failed", e=t(str(err)) if str(err) in i18n.STRINGS else str(err)), error=True)
+            self._snack(t("wifi_failed", e=_adb_text(err)), error=True)
         await self._check_phone(True)
 
     async def _browse_phone_dir(self) -> None:
@@ -528,7 +533,7 @@ class App:
             try:
                 real, names = await asyncio.to_thread(adb.list_dirs, serial, path)
             except adb.AdbError as err:
-                folders.controls = [ft.Text(t(str(err)) if str(err) in i18n.STRINGS else str(err),
+                folders.controls = [ft.Text(_adb_text(err),
                                             size=11, color=th.ERROR)]
                 folders.update()
                 return
@@ -545,7 +550,7 @@ class App:
             try:
                 await asyncio.to_thread(adb.make_dir, serial, join(name))
             except adb.AdbError as err:
-                self._snack(str(err), error=True)
+                self._snack(_adb_text(err), error=True)
                 return
             new_name.value = ""
             await go(join(name))
@@ -599,7 +604,7 @@ class App:
             on_phone, have, missing = await asyncio.to_thread(
                 adb.compare, self.device.serial, base, tracks, self.settings.phone_dir)
         except adb.AdbError as err:
-            self.phone_panel.set_compare(str(err))
+            self.phone_panel.set_compare(_adb_text(err))
         else:
             self.phone_panel.set_compare(t("compare_result", phone=on_phone, have=have, missing=missing))
         self.phone_panel._refresh()
@@ -662,7 +667,7 @@ class App:
                 adb.push(serial, base, files, remote, progress, lambda: task.cancel)
                 task.status = "cancelled" if task.cancel else "done"
             except adb.AdbError as err:
-                task.status, task.error = "error", t(str(err)) if str(err) in i18n.STRINGS else str(err)
+                task.status, task.error = "error", _adb_text(err)
             except Exception as err:
                 log.exception("push failed")
                 task.status, task.error = "error", str(err)

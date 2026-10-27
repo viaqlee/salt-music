@@ -88,13 +88,20 @@ def devices() -> list[Device]:
     return found
 
 
+def remote_path(path: str) -> str:
+    """A folder on the phone as the user may type it on Windows (`sdcard\\Music\\`) -> `/sdcard/Music`."""
+    return "/" + "/".join(p for p in path.strip().replace("\\", "/").split("/") if p)
+
+
 def _shell(serial: str, cmd: str, timeout: float = 60) -> str:
     return _run(["-s", serial, "shell", cmd], timeout=timeout)
 
 
 def _listing(serial: str, root: str) -> tuple[set[str], dict[str, str]]:
     """key(rel file) of every remote file, and key(rel dir) -> real rel dir."""
-    listing = _shell(serial, f"find {shlex.quote(root)} 2>/dev/null", timeout=120)
+    # find exits with 1 when some folder inside is unreadable (Android/data under /sdcard):
+    # what it did list is still right
+    listing = _shell(serial, f"find {shlex.quote(root)} 2>/dev/null; true", timeout=120)
     files: set[str] = set()
     dirs: dict[str, str] = {}
     for line in listing.splitlines():
@@ -145,7 +152,7 @@ def info(serial: str, root: str) -> dict:
     except (AdbError, ValueError):
         pass
     # df needs an existing path: walk up from the music folder
-    path = root.rstrip("/") or "/"
+    path = remote_path(root)
     try:
         probe = f"p={shlex.quote(path)}; while [ ! -d \"$p\" ] && [ \"$p\" != / ]; do p=${{p%/*}}; [ -z \"$p\" ] && p=/; done; df -k \"$p\""
         lines = _shell(serial, probe, timeout=10).strip().splitlines()
@@ -159,7 +166,7 @@ def info(serial: str, root: str) -> dict:
 def list_dirs(serial: str, path: str) -> tuple[str, list[str]]:
     """Folders inside `path` on the phone. A missing path falls back to its nearest existing parent,
     so the result is (the path really listed, sorted folder names)."""
-    path = path.rstrip("/") or "/"
+    path = remote_path(path)
     script = (f"p={shlex.quote(path)}; while [ ! -d \"$p\" ] && [ \"$p\" != / ]; do p=${{p%/*}}; [ -z \"$p\" ] && p=/; done; "
               "cd \"$p\" && echo \"$p\" && for d in *; do [ -d \"$d\" ] && echo \"$d\"; done")
     lines = _shell(serial, script, timeout=15).splitlines()
@@ -169,12 +176,12 @@ def list_dirs(serial: str, path: str) -> tuple[str, list[str]]:
 
 
 def make_dir(serial: str, path: str) -> None:
-    _shell(serial, f"mkdir -p {shlex.quote(path)}", timeout=15)
+    _shell(serial, f"mkdir -p {shlex.quote(remote_path(path))}", timeout=15)
 
 
 def compare(serial: str, base: Path, files: list[Path], remote_root: str) -> tuple[int, int, int]:
     """(files on the phone under the music folder, of `files` already there, of `files` missing)."""
-    root = remote_root.rstrip("/")
+    root = remote_path(remote_root).rstrip("/")
     try:
         remote_files, remote_dirs = _listing(serial, root)
     except AdbError:
@@ -197,7 +204,7 @@ def push(
     Existing remote folders are reused even if they differ in case; files that
     already exist are skipped. Returns (sent, skipped).
     """
-    root = remote_root.rstrip("/")
+    root = remote_path(remote_root).rstrip("/")
     _shell(serial, f"mkdir -p {shlex.quote(root)}")
     remote_files, remote_dirs = _listing(serial, root)
 

@@ -72,3 +72,28 @@ def test_missing_adb(monkeypatch):
     monkeypatch.setattr(adb.tools, "find", lambda n: None)
     with pytest.raises(adb.AdbError, match="adb_missing"):
         adb.devices()
+
+
+@pytest.mark.parametrize("typed, path", [
+    ("/sdcard/Music", "/sdcard/Music"), ("/sdcard/Music/", "/sdcard/Music"),
+    ("sdcard\\Music\\", "/sdcard/Music"), (" \\sdcard\\Музыка ", "/sdcard/Музыка"), ("/", "/"), ("", "/")])
+def test_remote_path_from_windows_input(typed, path):
+    assert adb.remote_path(typed) == path
+
+
+def test_push_survives_unreadable_folders(tmp_path, monkeypatch):
+    """find exits with 1 on Android/data under /sdcard: the listing must still be used."""
+    calls: list[str] = []
+
+    def fake_run(args, timeout=30):
+        if args[2] == "shell":
+            calls.append(args[3])
+        return "/sdcard/Rock/01. a.opus\n" if args[3].startswith("find ") else ""
+
+    monkeypatch.setattr(adb, "_run", fake_run)
+    f = tmp_path / "Rock" / "01. a.opus"
+    f.parent.mkdir()
+    f.write_bytes(b"x")
+    assert adb.push("S", tmp_path, [f], "sdcard\\", lambda *a: None) == (0, 1)
+    find = next(c for c in calls if c.startswith("find "))
+    assert find == "find /sdcard 2>/dev/null; true"

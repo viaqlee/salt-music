@@ -1,6 +1,6 @@
 """Salt Music: music downloader for YouTube / YouTube Music."""
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 APP_NAME = "Salt Music"
 APP_ID = "SaltMusic"  # folder names and the Windows AppUserModelID prefix
 AUMID = "SaltMusic.SaltMusic"
