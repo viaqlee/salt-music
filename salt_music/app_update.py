@@ -11,8 +11,10 @@ launch()   starts the installer and leaves it to replace the program:
            Linux:   a small shell waits until this process is gone, runs the .run
                     installer unattended into the same folder and starts the app.
 
-A run from sources (or an old portable copy) can't be replaced this way: for those the
-release page is opened instead.
+           A portable copy on Windows gets the same installer, run with its
+                    wizard: that makes a normal install, which updates itself later.
+
+A run from sources can't be replaced this way: for it the release page is opened.
 """
 
 from __future__ import annotations
@@ -82,17 +84,21 @@ def is_newer(remote: str, local: str) -> bool:
 # ---------- how this copy was installed ----------
 
 def install_kind() -> str | None:
-    """"windows" (Inno Setup install), "linux" (.run install) or None (sources, old portable copies)."""
+    """"windows" (Inno Setup install), "portable" (unpacked .exe build on Windows),
+    "linux" (.run install) or None (sources)."""
     here = app_dir()
     if IS_WINDOWS:
-        return "windows" if FROZEN and (here / "unins000.exe").is_file() else None
+        if not FROZEN:
+            return None
+        # Inno Setup names the uninstaller unins000.exe, unins001.exe... when one is taken
+        return "windows" if any(here.glob("unins*.exe")) else "portable"
     if (here / ".version").is_file() and (here / "uninstall.run").is_file() and (here / ".venv").is_dir():
         return "linux"
     return None
 
 
 def asset_name(version: str, kind: str) -> str:
-    return f"SaltMusic-Setup-{version}.exe" if kind == "windows" else f"SaltMusic-Setup-{version}.run"
+    return f"SaltMusic-Setup-{version}.exe" if kind in ("windows", "portable") else f"SaltMusic-Setup-{version}.run"
 
 
 # ---------- network ----------
@@ -224,6 +230,9 @@ def launch(installer: Path, kind: str) -> None:
         # /RELAUNCH=1 makes the silent setup start the app again when it is done
         p = proc.spawn([str(installer), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS",
                         "/MERGETASKS=!tools", "/RELAUNCH=1"])
+    elif kind == "portable":
+        # the full wizard: the user picks the tools, and it offers to start the app at the end
+        p = proc.spawn([str(installer)])
     elif kind == "linux":
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         p = proc.spawn(["/bin/sh", "-c", _LINUX_SCRIPT, "salt-update", str(os.getpid()), str(installer),

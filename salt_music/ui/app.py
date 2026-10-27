@@ -756,7 +756,12 @@ class App:
                 error = error or err
             if error:
                 log.info("update check: %s", error)
-            self.page.run_task(self._after_check, release, ytdlp, error, manual)
+            try:
+                self.page.run_task(self._after_check, release, ytdlp, error, manual)
+            except Exception as err:  # the window went away meanwhile (web mode reconnects)
+                log.info("update check result dropped: %s", err)
+                self._upd_state = "idle"
+                self._upd_release, self._upd_ytdlp = release, ytdlp
 
         threading.Thread(target=run, daemon=True, name="salt-update-check").start()
 
@@ -811,7 +816,11 @@ class App:
 
     def _open_release(self, release: app_update.Release) -> None:
         self.page.pop_dialog()
-        self.page.run_task(self.page.launch_url, release.page)
+        try:
+            desktop.open_url(release.page)
+        except Exception as err:
+            log.warning("can't open %s: %s", release.page, err)
+            self._snack(t("upd_open_failed", url=release.page), error=True)
 
     def _install_updates(self, kind: str | None) -> None:
         self.page.pop_dialog()

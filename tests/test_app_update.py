@@ -165,3 +165,36 @@ def test_linux_script_waits_and_installs(tmp_path):
     assert waiter.poll() is not None  # it waited for the app to quit
     assert (tmp_path / "ran").read_text().strip() == f"args: --unattended --prefix {prefix}"
     assert (prefix / "started").exists()
+
+
+def test_install_kind_on_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_update, "IS_WINDOWS", True)
+    monkeypatch.setattr(app_update, "app_dir", lambda: tmp_path)
+    monkeypatch.setattr(app_update, "FROZEN", False)
+    assert app_update.install_kind() is None  # from sources
+    monkeypatch.setattr(app_update, "FROZEN", True)
+    assert app_update.install_kind() == "portable"
+    (tmp_path / "unins001.exe").write_bytes(b"MZ")
+    assert app_update.install_kind() == "windows"
+    assert app_update.asset_name("1.0", "portable") == app_update.asset_name("1.0", "windows") == "SaltMusic-Setup-1.0.exe"
+
+
+def test_portable_downloads_the_installer(tmp_path):
+    fetch, stream = _release()
+    r = app_update.check("0.1", fetch=fetch)
+    assert app_update.download(r, "portable", tmp_path, fetch=fetch, stream=stream).name == "SaltMusic-Setup-9.0.0.exe"
+
+
+def test_open_url_takes_web_links_only(monkeypatch):
+    from salt_music import desktop
+
+    opened = []
+    monkeypatch.setattr(desktop.webbrowser, "open", lambda url: opened.append(url) or True)
+    desktop.open_url("https://github.com/viaqlee/salt-music/releases/tag/v1.0")
+    assert opened == ["https://github.com/viaqlee/salt-music/releases/tag/v1.0"]
+    for bad in ("file:///C:/Windows/System32/calc.exe", "C:\\evil.exe", "http://example.com"):
+        with pytest.raises(ValueError):
+            desktop.open_url(bad)
+    monkeypatch.setattr(desktop.webbrowser, "open", lambda url: False)
+    with pytest.raises(OSError):
+        desktop.open_url("https://github.com/")

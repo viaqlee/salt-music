@@ -1,6 +1,7 @@
 """Desktop integration behind one interface; the implementation is picked per platform.
 
     open_folder(path)    show a folder in the file manager
+    open_url(url)        open an https link in the default browser
     notify(title, body)  system notification
     allow_foreground()   let the running copy raise its window (Windows)
     setup_process()      taskbar identity etc., called once at start-up
@@ -9,6 +10,7 @@
 
 from __future__ import annotations
 
+import webbrowser
 from pathlib import Path
 
 from ..paths import IS_WINDOWS
@@ -30,4 +32,12 @@ def open_folder(folder: Path) -> None:
     _impl.open_folder(folder)
 
 
-__all__ = ["InstanceServer", "allow_foreground", "claim", "notify", "open_folder", "setup_process", "wake_running"]
+def open_url(url: str) -> None:
+    if not url.startswith("https://"):  # never hand a file or a command to the shell
+        raise ValueError(f"not a web link: {url!r}")
+    if not webbrowser.open(url):
+        raise OSError("no browser found")
+
+
+__all__ = ["InstanceServer", "allow_foreground", "claim", "notify", "open_folder", "open_url", "setup_process",
+           "wake_running"]
