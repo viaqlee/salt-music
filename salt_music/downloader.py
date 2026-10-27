@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import http.cookiejar
 import itertools
 import json
+import logging
 import queue
 import threading
 import time
-import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -16,9 +17,12 @@ import yt_dlp
 from yt_dlp.utils import DownloadCancelled
 
 from . import genre as genre_lookup
-from . import library, metadata, naming, tagger
+from . import library, metadata, naming, tagger, tools
 from .config import ARCHIVE_FILE, GENRES_FILE, JOBS_FILE, History, JsonStore, Settings, _write_json
 from .links import Link
+from .logs import YtdlpLogger
+
+log = logging.getLogger(__name__)
 
 ACTIVE = ("queued", "running", "resolving")
 JOBS_KEPT = 100
@@ -167,6 +171,8 @@ class Downloader:
         self.genres = JsonStore(GENRES_FILE)
         self.paused = threading.Event()
         self._queue: queue.Queue[Job] = queue.Queue()
+        self._pending: set[int] = set()  # ids of jobs waiting in _queue: never queue one twice
+        self._pending_lock = threading.Lock()
         self._avatars_done: set[str] = set()
         self._lib_index: tuple[str, float, set[tuple[str, str]]] | None = None
         self._save_lock = threading.Lock()
@@ -198,21 +204,31 @@ class Downloader:
             raw = json.loads(JOBS_FILE.read_text("utf-8"))
         except (OSError, ValueError):
             return
+        if not isinstance(raw, list):
+            return
         for d in raw:
             try:
                 job = _job_from_dict(d)
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
+                log.warning("skipped a saved job: %s", e)
                 continue
             self.jobs.append(job)
             if job.status == "queued":  # was unfinished when the app closed: carry on
-                self._queue.put(job)
+                self._enqueue(job)
+
+    def _enqueue(self, job: Job) -> None:
+        with self._pending_lock:
+            if job.id in self._pending:
+                return
+            self._pending.add(job.id)
+        self._queue.put(job)
 
     # ---------- public API (called from UI) ----------
 
     def add(self, link: Link, title: str) -> Job:
         job = Job(link, title)
         self.jobs.insert(0, job)
-        self._queue.put(job)
+        self._enqueue(job)
         self.on_change(job)
         return job
 
@@ -223,6 +239,8 @@ class Downloader:
         self.on_change(job)
 
     def retry(self, job: Job) -> None:
+        if job.status in ACTIVE and not job.cancel:
+            return  # already waiting or running
         if not job.resolved:
             job.items.clear()  # resolving starts over and rebuilds them
         for it in job.items:
@@ -230,7 +248,7 @@ class Downloader:
                 it.status, it.error, it.progress = "queued", "", 0.0
         job.status, job.error, job.cancel = "queued", "", False
         job.finished = None
-        self._queue.put(job)
+        self._enqueue(job)
         self.on_change(job)
 
     def retry_blocked(self) -> int:
@@ -266,6 +284,8 @@ class Downloader:
     def _run(self) -> None:
         while True:
             job = self._queue.get()
+            with self._pending_lock:
+                self._pending.discard(job.id)
             if job.cancel or job not in self.jobs:
                 continue
             try:
@@ -278,10 +298,13 @@ class Downloader:
                     if it.status == "queued":
                         it.status, it.error = "error", str(e)
             except Exception as e:  # keep the worker alive
-                traceback.print_exc()
+                log.exception("job %s failed", job.id)
                 job.status, job.error = "error", _short(e)
             job.finished = time.monotonic()
-            self.on_change(job)
+            try:
+                self.on_change(job)
+            except Exception:
+                log.exception("on_change failed")
 
     def _wait_if_paused(self, job: Job) -> None:
         while self.paused.is_set() and not job.cancel:
@@ -341,9 +364,10 @@ class Downloader:
         }
         template = s.templates.get(rel.kind) or s.templates["album"]
         base = Path(s.music_dir).expanduser()
-        folder = naming.resolve_dir(base, naming.render(template, values))
+        dir_parts, _ = naming.fit(base, naming.render(template, values), "")
+        folder = naming.resolve_dir(base, dir_parts)
 
-        artist_dir = self._artist_dir(base, template, values)
+        artist_dir = self._artist_dir(base, template, values, dir_parts)
 
         items = []
         for t in rel.tracks:
@@ -351,15 +375,17 @@ class Downloader:
             fvals = {**values, "title": t.title,
                      "track": naming.track_number(t.number, rel.total) if numbered else ""}
             parts = naming.render(s.filename_template, fvals) or [naming.clean(t.title)]
-            stem = naming.clean(" ".join(parts))
+            _, stem = naming.fit(base, dir_parts, naming.clean(" ".join(parts)))
             items.append(Item(rel, t, folder, stem, g, artist_dir=artist_dir, artist=artist))
         return items
 
-    def _artist_dir(self, base: Path, template: str, values: dict) -> Path | None:
+    def _artist_dir(self, base: Path, template: str, values: dict, fitted: list[str]) -> Path | None:
+        """Folder of the template up to the {artist} part, with the same shortening as `fitted`."""
         raw_parts = [p for p in template.replace("\\", "/").split("/") if p.strip()]
         for i, raw in enumerate(raw_parts):
             if "{artist}" in raw:
-                return naming.resolve_dir(base, naming.render("/".join(raw_parts[: i + 1]), values))
+                n = len(naming.render("/".join(raw_parts[: i + 1]), values))
+                return naming.resolve_dir(base, fitted[:n])
         return None
 
     def _save_avatar(self, artist_dir: Path, rel: metadata.Release, artist: metadata.ArtistInfo | None) -> None:
@@ -531,9 +557,10 @@ class Downloader:
             "retries": 5,
             "fragment_retries": 5,
             "overwrites": False,
+            "logger": YtdlpLogger(),
         }
-        if s.cookies_browser:
-            opts["cookiesfrombrowser"] = (s.cookies_browser,)
+        opts.update(ytdlp_tool_opts())
+        opts.update(cookie_opts(s))
         url = f"https://music.youtube.com/watch?v={it.track.video_id}"
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
@@ -565,23 +592,62 @@ class Downloader:
             self.on_file(path)
 
 
+def ytdlp_tool_opts() -> dict:
+    """Point yt-dlp at our ffmpeg and deno instead of letting it search on its own."""
+    opts: dict = {}
+    ffmpeg = tools.find(tools.FFMPEG)
+    if ffmpeg:
+        opts["ffmpeg_location"] = str(Path(ffmpeg).parent)
+    deno = tools.find(tools.DENO)
+    if deno:
+        opts["js_runtimes"] = {"deno": {"path": deno}}
+    return opts
+
+
+def cookie_opts(s: Settings) -> dict:
+    """A cookies.txt file wins over reading a browser."""
+    if s.cookies_file and Path(s.cookies_file).is_file():
+        return {"cookiefile": s.cookies_file}
+    if s.cookies_browser:
+        return {"cookiesfrombrowser": (s.cookies_browser,)}
+    return {}
+
+
 LOGIN_COOKIES = {"SID", "SAPISID", "__Secure-3PSID", "__Secure-1PSID"}
+COOKIE_FILE_MAX = 5 * 1024 * 1024
+
+
+def _login_state(jar) -> str:
+    names = {c.name for c in jar if c.domain.endswith(("youtube.com", "google.com"))}
+    return "ok" if names & LOGIN_COOKIES else "anon"
 
 
 def cookie_status(browser: str) -> str:
-    """"ok" — signed in to YouTube, "anon" — cookies exist but no login, "error" — unreadable."""
+    """"ok" — signed in to YouTube, "anon" — cookies exist but no login, "error" — unreadable.
+
+    Only names are looked at; cookie values never leave yt-dlp's jar.
+    """
     from yt_dlp.cookies import extract_cookies_from_browser
 
-    class _Quiet:
-        def debug(self, *a, **k): pass
-        info = warning = error = debug
-
     try:
-        jar = extract_cookies_from_browser(browser, logger=_Quiet())
-    except Exception:
+        jar = extract_cookies_from_browser(browser, logger=YtdlpLogger())
+    except Exception as e:
+        log.info("cookies from %s unreadable: %s", browser, type(e).__name__)
         return "error"
-    names = {c.name for c in jar if c.domain.endswith(("youtube.com", "google.com"))}
-    return "ok" if names & LOGIN_COOKIES else "anon"
+    return _login_state(jar)
+
+
+def cookie_file_status(path: str) -> str:
+    """Same as cookie_status, for a Netscape cookies.txt file."""
+    p = Path(path)
+    try:
+        if not p.is_file() or p.stat().st_size > COOKIE_FILE_MAX:
+            return "error"
+        jar = http.cookiejar.MozillaCookieJar(str(p))
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except (OSError, http.cookiejar.LoadError, UnicodeDecodeError):
+        return "error"
+    return _login_state(jar)
 
 
 def _job_to_dict(j: Job) -> dict:

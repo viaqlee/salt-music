@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import Callable
@@ -9,7 +10,8 @@ from typing import Callable
 import flet as ft
 
 from .. import desktop, naming
-from ..downloader import cookie_status
+from ..downloader import cookie_file_status, cookie_status
+from ..paths import IS_WINDOWS
 from ..config import BROWSERS, DEFAULT_FILENAME, DEFAULT_TEMPLATES, FORMATS, KINDS, Settings
 from ..i18n import t
 from . import theme as th
@@ -118,6 +120,12 @@ class SettingsPanel:
         # --- source
         self.sleep_label = th.label(t("sleep", s=f"{self.s.sleep_between:g}"), 11, th.TEXT)
         self.cookie_text = th.label("", 10)
+        self.cookie_file_text = ft.Text("", size=11, color=th.TEXT, selectable=True, max_lines=2,
+                                        overflow=ft.TextOverflow.ELLIPSIS)
+        # stays in the tree, only its visibility changes: recreated buttons lose clicks
+        self.cookie_file_clear = th.capsule(t("cookies_file_clear"), self._clear_cookie_file,
+                                            icon=ft.Icons.CLOSE_ROUNDED)
+        self._cookie_file_ui()
         source = th.section(t("sec_source"), [
             ft.Row([ft.Text(t("include_videos"), size=12, color=th.TEXT, expand=True),
                     ft.Switch(value=self.s.include_videos, active_color=th.ACCENT, on_change=self._on_videos)]),
@@ -133,6 +141,12 @@ class SettingsPanel:
                 border_radius=th.SHARP, expand=True,
             ),
             th.label(t("cookies_hint"), 10),
+            th.label(t("cookies_file"), 11, th.TEXT),
+            ft.Row([ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=16, color=th.ACCENT),
+                    ft.Container(self.cookie_file_text, expand=True)], spacing=8),
+            ft.Row([th.capsule(t("cookies_file_pick"), self._pick_cookie_file, icon=ft.Icons.FILE_OPEN_ROUNDED),
+                    self.cookie_file_clear], spacing=6, wrap=True, run_spacing=6),
+            th.label(t("cookies_file_hint"), 10),
             self.cookie_text,
             self.sleep_label,
             ft.Slider(min=0, max=10, divisions=20, value=self.s.sleep_between, active_color=th.ACCENT,
@@ -142,6 +156,8 @@ class SettingsPanel:
         # --- system
         self.ytdlp_text = th.label("", 11, th.TEXT)
         self.deno_text = th.label("", 10)
+        self.ytdlp_reset = th.capsule(t("ytdlp_reset"), lambda e: self._reset_ytdlp(),
+                                      icon=ft.Icons.SETTINGS_BACKUP_RESTORE_ROUNDED)
         system = th.section(t("sec_system"), [
             ft.Row([th.label(t("language"), 11, th.TEXT, expand=True),
                     th.capsule("RU", lambda e: self.on_language("ru"), selected=self.s.language == "ru"),
@@ -149,6 +165,9 @@ class SettingsPanel:
                    spacing=6),
             ft.Row([self.ytdlp_text, ft.Container(expand=True),
                     th.capsule(t("update_ytdlp"), lambda e: actions["update_ytdlp"](), icon=ft.Icons.UPDATE_ROUNDED)]),
+            ft.Row([self.ytdlp_reset,
+                    th.capsule(t("open_logs"), lambda e: actions["open_logs"](), icon=ft.Icons.ARTICLE_ROUNDED)],
+                   spacing=6, wrap=True, run_spacing=6),
             self.deno_text,
         ])
         behaviour = th.section(t("sec_behaviour"), [
@@ -209,15 +228,20 @@ class SettingsPanel:
 
     @staticmethod
     def _short_path(p: str) -> str:
+        if IS_WINDOWS:
+            return p  # "~" means nothing to Windows users
         home = str(Path.home())
-        return "~" + p[len(home):] if p.startswith(home) else p
+        return "~" + p[len(home):] if p == home or p.startswith(home + os.sep) else p
 
     def _changed(self):
         self.s.save()
         self.on_change()
 
-    def set_system(self, ytdlp: str, deno_ok: bool, ffmpeg_ok: bool, mpv_ok: bool = True) -> None:
+    def set_system(self, ytdlp: str, deno_ok: bool, ffmpeg_ok: bool, mpv_ok: bool = True,
+                   overlay: bool = False) -> None:
+        """overlay: an updated yt-dlp downloaded by the app is (or will be after restart) in use."""
         self.ytdlp_text.value = t("ytdlp_version", v=ytdlp)
+        self.ytdlp_reset.visible = overlay
         msgs = [t("deno_ok") if deno_ok else t("deno_missing")]
         if not ffmpeg_ok:
             msgs.append(t("ffmpeg_missing"))
@@ -339,7 +363,7 @@ class SettingsPanel:
         fvals = {**values, "track": "01" if k in ("album", "ep") else ""}
         stem = naming.clean(" ".join(naming.render(self.s.filename_template, fvals)) or "Supersonic")
         base = self._short_path(self.s.music_dir)
-        self.preview.value = "/".join([base, *parts, f"{stem}.{self.s.audio_format}"])
+        self.preview.value = os.sep.join([base.rstrip("\\/"), *parts, f"{stem}.{self.s.audio_format}"])
 
     # ---------- genre / source ----------
 
@@ -374,9 +398,46 @@ class SettingsPanel:
         self._changed()
         self.check_cookies()
 
+    def _cookie_file_ui(self) -> None:
+        self.cookie_file_text.value = self.s.cookies_file or t("cookies_none")
+        self.cookie_file_text.color = th.TEXT if self.s.cookies_file else th.MUTED
+        self.cookie_file_clear.visible = bool(self.s.cookies_file)
+
+    async def _pick_cookie_file(self, e):
+        files = await self.picker.pick_files(dialog_title=t("cookies_file"), file_type=ft.FilePickerFileType.CUSTOM,
+                                             allowed_extensions=["txt"])
+        path = files[0].path if files else None
+        if not path:
+            return
+        self.s.cookies_file = path
+        self._cookie_file_ui()
+        self._changed()
+        self.view.update()
+        self.check_cookies()
+
+    def _clear_cookie_file(self, e):
+        self.s.cookies_file = ""
+        self._cookie_file_ui()
+        self._changed()
+        self.view.update()
+        self.check_cookies()
+
+    def _reset_ytdlp(self) -> None:
+        self.actions["reset_ytdlp"]()
+        self.ytdlp_reset.visible = False
+        self._refresh(self.ytdlp_reset)
+
+    def _cookie_source(self) -> tuple[str, str]:
+        """(kind, value) of what downloads will use: a file wins over a browser."""
+        if self.s.cookies_file:
+            return "file", self.s.cookies_file
+        if self.s.cookies_browser:
+            return "browser", self.s.cookies_browser
+        return "", ""
+
     def check_cookies(self) -> None:
-        browser = self.s.cookies_browser
-        if not browser:
+        kind, value = self._cookie_source()
+        if not kind:
             self.cookie_text.value = ""
             self._refresh(self.cookie_text)
             return
@@ -384,14 +445,15 @@ class SettingsPanel:
         self._refresh(self.cookie_text)
 
         def work():
-            status = cookie_status(browser)
-            if browser == self.s.cookies_browser:
-                self.page.run_task(self._show_cookies, status, browser)
+            status = cookie_file_status(value) if kind == "file" else cookie_status(value)
+            if (kind, value) == self._cookie_source():
+                self.page.run_task(self._show_cookies, status, kind, value)
 
-        threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=work, daemon=True, name="salt-cookies").start()
 
-    async def _show_cookies(self, status: str, browser: str) -> None:
-        self.cookie_text.value = t("cookies_" + status, b=browser.capitalize())
+    async def _show_cookies(self, status: str, kind: str, value: str) -> None:
+        name = t("cookies_file_title", b=Path(value).name) if kind == "file" else value.capitalize()
+        self.cookie_text.value = t("cookies_" + status, b=name)
         self.cookie_text.color = th.ACCENT if status == "ok" else th.ERROR
         self._refresh(self.cookie_text)
         if status == "ok":

@@ -17,7 +17,7 @@ def _get(url: str, timeout: float = 10, retries: int = 2) -> dict:
     for attempt in range(retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
+                return json.loads(r.read(2 * 1024 * 1024).decode("utf-8"))
         except urllib.error.HTTPError as e:
             # 503 = MusicBrainz rate limit; wait and retry.
             if e.code != 503 or attempt == retries:

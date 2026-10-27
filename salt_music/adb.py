@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import re
 import shlex
-import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
-from . import naming
+from . import naming, proc, tools
 from .library import AUDIO_EXT
+
+# host:port; a host never starts with "-", or adb would read it as an option
+ADDRESS_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\]):\d{1,5}$")
 
 
 @dataclass
@@ -25,18 +29,49 @@ class AdbError(RuntimeError):
 
 
 def available() -> bool:
-    return shutil.which("adb") is not None
+    return tools.find(tools.ADB) is not None
+
+
+_server_lock = threading.Lock()
+_server_ok = False
+
+
+def _exe() -> str:
+    exe = tools.find(tools.ADB)
+    if not exe:
+        raise AdbError("adb_missing")
+    return exe
+
+
+def _ensure_server(exe: str) -> None:
+    """Start the adb daemon with no pipes of ours.
+
+    Any adb command starts the daemon when it is not running, and the daemon then
+    inherits that command's stdout: reading the output would never reach the end.
+    """
+    global _server_ok
+    with _server_lock:
+        if _server_ok:
+            return
+        try:
+            p = proc.spawn([exe, "start-server"])
+            p.wait(timeout=20)
+            _server_ok = p.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 def _run(args: list[str], timeout: float = 30) -> str:
+    exe = _exe()
+    _ensure_server(exe)
     try:
-        r = subprocess.run(["adb", *args], capture_output=True, text=True, timeout=timeout)
+        r = proc.run([exe, *args], timeout=timeout)
     except FileNotFoundError:
         raise AdbError("adb_missing")
     except subprocess.TimeoutExpired:
         raise AdbError("adb_timeout")
     if r.returncode != 0:
-        raise AdbError((r.stderr or r.stdout).strip() or "adb error")
+        raise AdbError((r.stderr or r.stdout).strip()[:500] or "adb error")
     return r.stdout
 
 
@@ -87,6 +122,9 @@ def _remote_rel(f: Path, base: Path, remote_dirs: dict[str, str]) -> tuple[list[
 
 def connect(address: str) -> str:
     """`adb connect host:port` for wireless debugging; returns adb's answer."""
+    address = address.strip()
+    if not ADDRESS_RE.match(address):
+        raise AdbError("bad_address")
     out = _run(["connect", address], timeout=15).strip()
     if "cannot" in out or "failed" in out or "unable" in out:
         raise AdbError(out)
@@ -186,7 +224,7 @@ def push(
         progress(i, total, f, "sent")
     try:
         # Let the phone's media library see the new files.
-        _shell(serial, f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://{shlex.quote(root)}")
+        _shell(serial, f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d {shlex.quote('file://' + root)}")
     except AdbError:
         pass
     return sent, skipped

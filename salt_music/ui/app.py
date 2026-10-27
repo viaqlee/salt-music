@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
-import shutil
-import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 
 import flet as ft
 
-from .. import adb, desktop, i18n, library, links, metadata
+from .. import __version__, adb, desktop, i18n, library, links, metadata, tools, updater
 from ..config import Settings
 from ..downloader import Downloader
 from ..i18n import t
 from ..links import LinkError
+from ..paths import IS_WINDOWS, assets_dir
 from . import theme as th
 from .downloads_panel import DownloadsPanel, PushTask
 from .library_panel import LibraryPanel
@@ -25,6 +24,8 @@ from .phone_panel import PhonePanel
 from .player import Player
 from .settings_panel import SettingsPanel
 from .sidebar import Sidebar
+
+log = logging.getLogger(__name__)
 
 
 class App:
@@ -73,14 +74,15 @@ class App:
             actions={
                 "genres": self._show_genres,
                 "update_ytdlp": self._update_ytdlp,
+                "reset_ytdlp": self._reset_ytdlp,
+                "open_logs": self._open_logs,
                 "clear_archive": self._clear_archive,
                 "cookies_ok": self.downloader.retry_blocked,
             },
             on_close=lambda: self.right_bar.set_open(False),
         )
         self.settings_panel.check_cookies()
-        self.settings_panel.set_system(self._ytdlp_version(), shutil.which("deno") is not None,
-                                       shutil.which("ffmpeg") is not None, shutil.which("mpv") is not None)
+        self._show_system()
         self.phone_panel = PhonePanel(
             self.settings,
             actions={
@@ -107,7 +109,7 @@ class App:
                 ft.Text("SALT", size=15, color=th.TEXT, font_family=th.FONT_BOLD),
                 ft.Text("MUSIC", size=15, color=th.ACCENT, font_family=th.FONT_BOLD),
                 ft.Container(expand=True),
-                th.label("v0.1", 10, th.FAINT),
+                th.label(f"v{__version__}", 10, th.FAINT),
                 th.icon_btn(ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT_ROUNDED, lambda e: self.left_bar.set_open(False),
                             tooltip=t("hide_panel"), size=16),
             ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -191,30 +193,41 @@ class App:
     # ---------- background loop ----------
 
     async def loop(self) -> None:
-        last_lib = last_phone = 0.0
+        state = {"lib": 0.0, "phone": 0.0}
         while True:
             await asyncio.sleep(0.3)
-            now = time.monotonic()
-            active = any(j.status in ("running", "resolving") for j in self.downloader.jobs) or any(
-                p.status == "running" for p in self.downloads.pushes)
-            if self.dirty or active:
-                self.dirty = False
-                self.downloader.save_jobs()
-                if not self.hidden:
-                    self.downloads.sync()
-                    self.downloads.view.update()
-            if self.hidden and not active and not self.downloader.busy:
-                desktop.notify(t("bg_done_title"), t("bg_done_body"))
-                await self.quit()
-                return
-            if self.lib_dirty and now - last_lib > 3:
-                self.lib_dirty = False
-                last_lib = now
-                await self._rescan()
-            if now - last_phone > 5:
-                last_phone = now
-                await self._check_phone(False)
-            self._auto_push()
+            try:
+                if await self._tick(state):
+                    return
+            except Exception:
+                # one bad tick must not stop the UI from updating for good
+                log.exception("ui loop")
+                await asyncio.sleep(2)
+
+    async def _tick(self, state: dict) -> bool:
+        """One pass of the loop; True when the app has quit."""
+        now = time.monotonic()
+        active = any(j.status in ("running", "resolving") for j in self.downloader.jobs) or any(
+            p.status == "running" for p in self.downloads.pushes)
+        if self.dirty or active:
+            self.dirty = False
+            self.downloader.save_jobs()
+            if not self.hidden:
+                self.downloads.sync()
+                self.downloads.view.update()
+        if self.hidden and not active and not self.downloader.busy:
+            desktop.notify(t("bg_done_title"), t("bg_done_body"))
+            await self.quit()
+            return True
+        if self.lib_dirty and now - state["lib"] > 3:
+            self.lib_dirty = False
+            state["lib"] = now
+            await self._rescan()
+        if now - state["phone"] > 5:
+            state["phone"] = now
+            await self._check_phone(False)
+        self._auto_push()
+        return False
 
     # ---------- window ----------
 
@@ -338,6 +351,9 @@ class App:
         return box["v"]
 
     async def _ask_genre_dialog(self, artist: str, done: threading.Event, box: dict) -> None:
+        if self.hidden:
+            # downloading in the background: the question would wait unseen forever
+            await self.show_window()
         tf = th.field(label=t("sec_genre"), autofocus=True)
 
         def finish(value):
@@ -636,6 +652,7 @@ class App:
             except adb.AdbError as err:
                 task.status, task.error = "error", t(str(err)) if str(err) in i18n.STRINGS else str(err)
             except Exception as err:
+                log.exception("push failed")
                 task.status, task.error = "error", str(err)
             if move and on_phone:
                 # only what really is on the phone now, even if the transfer stopped halfway
@@ -644,7 +661,7 @@ class App:
             task.finished = time.monotonic()
             self.dirty = True
 
-        threading.Thread(target=run, daemon=True).start()
+        threading.Thread(target=run, daemon=True, name="salt-push").start()
         return task
 
     # ---------- system ----------
@@ -657,28 +674,49 @@ class App:
         except Exception:
             return "?"
 
+    def _show_system(self, version: str | None = None) -> None:
+        tools.refresh()  # the user may have installed something meanwhile
+        self.settings_panel.set_system(version or self._ytdlp_version(), tools.available(tools.DENO),
+                                       tools.available(tools.FFMPEG), tools.available(tools.MPV),
+                                       overlay=updater.active_version() is not None)
+
     def _update_ytdlp(self) -> None:
+        """Download the newest yt-dlp next to the app (no pip in the packed .exe)."""
         self._snack(t("updating"))
+        pending = updater.active_version()
+        current = pending or self._ytdlp_version()
 
         def run():
-            r = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]"],
-                               capture_output=True, text=True)
-            if r.returncode != 0:
-                msg = t("update_failed", e=(r.stderr or r.stdout).strip().splitlines()[-1][:200])
-                self.page.run_task(self._after_update, msg, True)
+            try:
+                v = updater.update(current)
+            except Exception as err:
+                log.warning("yt-dlp update failed: %s", err)
+                self.page.run_task(self._after_update, t("update_failed", e=str(err)[:200]), True)
                 return
-            v = subprocess.run([sys.executable, "-c", "import yt_dlp.version as v; print(v.__version__)"],
-                               capture_output=True, text=True).stdout.strip()
-            self.page.run_task(self._after_update, t("updated", v=v), False, v)
+            if v is None:
+                self.page.run_task(self._after_update, t("ytdlp_latest"), False)
+            else:
+                self.page.run_task(self._after_update, t("updated", v=v), False, v)
 
-        threading.Thread(target=run, daemon=True).start()
+        threading.Thread(target=run, daemon=True, name="salt-update").start()
 
     async def _after_update(self, msg: str, error: bool, version: str | None = None) -> None:
         if version:
-            self.settings_panel.set_system(version, shutil.which("deno") is not None,
-                                           shutil.which("ffmpeg") is not None, shutil.which("mpv") is not None)
+            self._show_system(version)
             self.settings_panel.view.update()
         self._snack(msg, error)
+
+    def _reset_ytdlp(self) -> None:
+        updater.reset()
+        self._snack(t("ytdlp_reset_done"))
+
+    def _open_logs(self) -> None:
+        from ..paths import LOG_DIR
+
+        try:
+            desktop.open_folder(LOG_DIR)
+        except OSError as err:
+            self._snack(t("err_open_folder", e=err), error=True)
 
     def _clear_archive(self) -> None:
         self.downloader.archive.clear()
@@ -699,6 +737,9 @@ async def main(page: ft.Page) -> None:
     page.window.min_width = 1100
     page.window.min_height = 680
     page.window.bgcolor = th.BG
+    icon = assets_dir() / ("icon.ico" if IS_WINDOWS else "icon.png")
+    if icon.is_file():
+        page.window.icon = str(icon)
     app = App(page)
     if _instance:
         page.window.prevent_close = True
@@ -713,12 +754,13 @@ _instance: desktop.InstanceServer | None = None
 
 def run() -> None:
     global _instance
-    assets = Path(__file__).resolve().parents[2] / "assets"
+    assets = assets_dir()
     port = os.environ.get("SALT_WEB_PORT")
-    if port:  # browser mode, handy for UI checks
-        ft.run(main, assets_dir=str(assets), view=ft.AppView.WEB_BROWSER, port=int(port))
+    if port:  # browser mode, handy for UI checks; listens on localhost only
+        ft.run(main, assets_dir=str(assets), view=ft.AppView.WEB_BROWSER, port=int(port), host="127.0.0.1")
         return
-    if desktop.wake_running():
+    _instance = desktop.claim()
+    if _instance is None:
+        log.info("another copy is running: woke it up")
         return
-    _instance = desktop.InstanceServer()
     ft.run(main, assets_dir=str(assets))

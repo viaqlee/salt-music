@@ -1,0 +1,2 @@
+flet-cli==1.0.5
+pyinstaller

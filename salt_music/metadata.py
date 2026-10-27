@@ -112,7 +112,10 @@ def resolve_artist_id(handle: str) -> str:
     """@handle -> UC... channel id (through yt-dlp, ytmusicapi can't)."""
     import yt_dlp
 
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlist_items": "0", "skip_download": True}
+    from .logs import YtdlpLogger
+
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlist_items": "0",
+            "skip_download": True, "logger": YtdlpLogger()}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"https://www.youtube.com/{handle}", download=False, process=False)
     cid = info.get("channel_id") or info.get("id")
