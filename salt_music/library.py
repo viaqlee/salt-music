@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -55,16 +56,53 @@ def _number(raw: str) -> int:
         return 0
 
 
-def read(path: Path) -> LibTrack:
+@dataclass(frozen=True)
+class _Info:
+    title: str
+    album_artist: str
+    album: str
+    number: int
+    artists: tuple[str, ...]  # every name from albumartist / artist, split on commas
+
+
+# Reading tags is the slow part of a scan; files that did not change are not reread.
+_cache: dict[Path, tuple[int, int, _Info]] = {}
+_cache_lock = threading.Lock()
+CACHE_MAX = 50_000
+
+
+def _info(path: Path) -> _Info:
+    try:
+        st = path.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        stamp = (0, 0)
+    with _cache_lock:
+        hit = _cache.get(path)
+    if hit and hit[:2] == stamp:
+        return hit[2]
     try:
         f = mutagen.File(path, easy=True)
         tags = f.tags if f else None
     except Exception:
         tags = None
-    title = _first(tags, "title") or path.stem
-    artist = _first(tags, "albumartist", "artist") or path.parent.parent.name
-    album = _first(tags, "album") or path.parent.name
-    return LibTrack(path, title, artist, album, _number(_first(tags, "tracknumber")))
+    names: list[str] = []
+    for n in ("albumartist", "artist"):
+        for v in (tags.get(n) or []) if tags else []:
+            names.extend(x.strip() for x in str(v).split(","))
+    info = _Info(_first(tags, "title"), _first(tags, "albumartist", "artist"), _first(tags, "album"),
+                 _number(_first(tags, "tracknumber")), tuple(n for n in names if n))
+    with _cache_lock:
+        if len(_cache) >= CACHE_MAX:
+            _cache.clear()
+        _cache[path] = (*stamp, info)
+    return info
+
+
+def read(path: Path) -> LibTrack:
+    i = _info(path)
+    return LibTrack(path, i.title or path.stem, i.album_artist or path.parent.parent.name,
+                    i.album or path.parent.name, i.number)
 
 
 def scan(base: Path) -> list[LibArtist]:
@@ -97,16 +135,9 @@ def index(base: Path) -> set[tuple[str, str]]:
     for p in base.rglob("*"):
         if p.suffix.lower() not in AUDIO_EXT or not p.is_file():
             continue
-        try:
-            f = mutagen.File(p, easy=True)
-            tags = f.tags if f else None
-        except Exception:
-            tags = None
-        title = naming.key(_first(tags, "title") or re.sub(r"^\d+\.\s*", "", p.stem))
-        names = {p.parent.parent.name}
-        for n in ("albumartist", "artist"):
-            for v in (tags.get(n) or []) if tags else []:
-                names.update(x.strip() for x in str(v).split(","))
+        i = _info(p)
+        title = naming.key(i.title or re.sub(r"^\d+\.\s*", "", p.stem))
+        names = {p.parent.parent.name, *i.artists}
         out.update((naming.key(n), title) for n in names if n)
     return out
 

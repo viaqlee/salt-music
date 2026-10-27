@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +16,12 @@ from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggopus import OggOpus
 from PIL import Image
 
-UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) SaltMusic/0.1"}
+log = logging.getLogger(__name__)
+
+UA = {"User-Agent": "Mozilla/5.0 SaltMusic/0.2"}
+MAX_IMAGE_BYTES = 15 * 1024 * 1024
+# A cover is never bigger than this; refuse decompression bombs early.
+Image.MAX_IMAGE_PIXELS = 40_000_000
 
 
 @dataclass
@@ -29,19 +36,27 @@ class Tags:
     total: int | None = None
 
 
-def fetch(url: str, timeout: float = 15) -> bytes | None:
+def fetch(url: str, timeout: float = 15, limit: int = MAX_IMAGE_BYTES) -> bytes | None:
+    """GET an http(s) URL, at most `limit` bytes; None on any failure."""
+    if not url.lower().startswith(("https://", "http://")):
+        return None  # no file:// or other schemes from metadata
     try:
         req = urllib.request.Request(url, headers=UA)
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read()
-    except Exception:
+            data = r.read(limit + 1)
+    except Exception as e:
+        log.debug("fetch %s: %s", url, e)
         return None
+    return data if len(data) <= limit else None
 
 
 def square_jpeg(data: bytes, max_size: int = 1200) -> bytes | None:
     """Center-crop to a square (video thumbnails are 16:9) and re-encode as JPEG."""
     try:
-        img = Image.open(io.BytesIO(data)).convert("RGB")
+        img = Image.open(io.BytesIO(data))
+        if img.width * img.height > Image.MAX_IMAGE_PIXELS:
+            return None
+        img = img.convert("RGB")
     except Exception:
         return None
     w, h = img.size
@@ -63,6 +78,19 @@ def cover_from(url: str | None, fallbacks: tuple[str, ...] = ()) -> bytes | None
                 if sq:
                     return sq
     return None
+
+
+def _save(save, *args, **kwargs) -> None:
+    """mutagen save, retried: on Windows an antivirus or the indexer may hold the
+    fresh file open for a moment."""
+    for attempt in range(6):
+        try:
+            save(*args, **kwargs)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.2 * (attempt + 1))
 
 
 def write(path: Path, t: Tags, cover: bytes | None) -> None:
@@ -108,7 +136,7 @@ def _vorbis(f, t: Tags, cover: bytes | None) -> None:
             f.add_picture(pic)
         else:
             f["metadata_block_picture"] = [base64.b64encode(pic.write()).decode("ascii")]
-    f.save()
+    _save(f.save)
 
 
 def _mp4(path: Path, t: Tags, cover: bytes | None) -> None:
@@ -124,7 +152,7 @@ def _mp4(path: Path, t: Tags, cover: bytes | None) -> None:
         f["trkn"] = [(t.track, t.total or 0)]
     if cover:
         f["covr"] = [MP4Cover(cover, imageformat=MP4Cover.FORMAT_JPEG)]
-    f.save()
+    _save(f.save)
 
 
 def _id3(path: Path, t: Tags, cover: bytes | None) -> None:
@@ -144,7 +172,7 @@ def _id3(path: Path, t: Tags, cover: bytes | None) -> None:
     if cover:
         f.delall("APIC")
         f.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover))
-    f.save(path, v2_version=3)
+    _save(f.save, path, v2_version=3)
 
 
 def read_cover(path: Path) -> bytes | None:

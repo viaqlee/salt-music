@@ -52,6 +52,55 @@ class PushTask:
     cancel: bool = False
 
 
+class Chip:
+    """Status capsule that keeps its controls and only changes text and colour."""
+
+    def __init__(self) -> None:
+        self.text = ft.Text("", size=10, font_family=th.FONT_MEDIUM)
+        self.view = ft.Container(self.text, border_radius=th.CAPSULE,
+                                 padding=ft.Padding.symmetric(horizontal=8, vertical=1))
+        self._color = None
+
+    def set(self, label: str, color: str) -> None:
+        self.text.value = label
+        if color != self._color:
+            self._color = color
+            self.text.color = color
+            self.view.border = ft.Border.all(1, color)
+
+
+class ItemRow:
+    """One track inside an expanded card; reused between redraws."""
+
+    def __init__(self) -> None:
+        self.icon = ft.Icon(ITEM_ICON["queued"], size=13)
+        self.num = ft.Text("", size=10, color=th.FAINT, width=22)
+        self.title = ft.Text("", size=11, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+        self.right = ft.Text("", size=10, max_lines=1)
+        self.view = ft.Container(height=25, content=ft.Row([self.icon, self.num, self.title, self.right], spacing=8))
+
+    def set(self, job: Job, it: Item) -> None:
+        color = STATUS_COLOR.get(it.status, th.MUTED)
+        right = ""
+        left = job.item_left(it) if it.status in ("downloading", "processing", "queued") else None
+        if it.status == "downloading":
+            right = f"{it.progress * 100:.0f}%  {th.fmt_speed(it.speed)}"
+        elif it.status == "processing":
+            right = t("st_processing")
+        if left is not None:
+            right = f"{right}  ~{th.fmt_time(left)}".strip()
+        elif it.status == "error":
+            right = humanize_error(it.error)[:80]
+        elif it.status in ("done", "skipped"):
+            right = t(f"st_{it.status}")
+        self.icon.icon, self.icon.color = ITEM_ICON.get(it.status), color
+        self.num.value = f"{it.track.number:02}" if it.track.number else "··"
+        self.title.value = it.track.title
+        self.title.color = th.TEXT if it.status != "skipped" else th.MUTED
+        self.right.value, self.right.color = right, color
+        self.view.tooltip = it.error or None
+
+
 def humanize_error(msg: str) -> str:
     if "not a bot" in msg or "Sign in to confirm" in msg:
         return t("err_bot")
@@ -70,7 +119,8 @@ class JobCard:
         self.icon = ft.Icon(KIND_ICON.get(job.link.kind, ft.Icons.MUSIC_NOTE_ROUNDED), size=18, color=th.TEXT)
         self.title = ft.Text("", size=13, color=th.TEXT, font_family=th.FONT_MEDIUM, max_lines=1,
                              overflow=ft.TextOverflow.ELLIPSIS, expand=True)
-        self.chip = ft.Container()
+        self.chip = Chip()
+        self.rows: list[ItemRow] = []
         self.counts = th.label("", 11)
         self.times = th.label("", 11)
         self.current = ft.Text("", size=11, color=th.MUTED, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
@@ -97,7 +147,7 @@ class JobCard:
             content=ft.Column(
                 spacing=6,
                 controls=[
-                    ft.Row([self.icon, self.title, self.chip, self.buttons], spacing=10,
+                    ft.Row([self.icon, self.title, self.chip.view, self.buttons], spacing=10,
                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     self.bar,
                     ft.Row([self.counts, self.times], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
@@ -122,10 +172,7 @@ class JobCard:
             label = t("paused")
         else:
             label = t(f"st_{status}")
-        self.chip.content = th.status_chip(label, STATUS_COLOR.get(status, th.MUTED)).content
-        self.chip.border = ft.Border.all(1, STATUS_COLOR.get(status, th.MUTED))
-        self.chip.border_radius = th.CAPSULE
-        self.chip.padding = ft.Padding.symmetric(horizontal=8, vertical=1)
+        self.chip.set(label, STATUS_COLOR.get(status, th.MUTED))
 
         total = len(j.items)
         finished = j.count("done", "skipped")
@@ -183,40 +230,19 @@ class JobCard:
         self.items_box.visible = self.expanded
         self.items.visible = self.expanded
         if self.expanded:
-            rows = [self._item_row(i) for i in j.items]
-            self.items.controls = rows
-            self.items_box.height = min(len(rows) * 26 + 4, 320)
+            items = list(j.items)
+            while len(self.rows) < len(items):
+                self.rows.append(ItemRow())
+            del self.rows[len(items):]
+            for row, it in zip(self.rows, items):
+                row.set(j, it)
+            if len(self.items.controls) != len(self.rows):
+                self.items.controls = [r.view for r in self.rows]
+            self.items_box.height = min(len(self.rows) * 26 + 4, 320)
             self.items.scroll = ft.ScrollMode.AUTO
-
-    def _item_row(self, it: Item) -> ft.Control:
-        color = STATUS_COLOR.get(it.status, th.MUTED)
-        right = ""
-        left = self.job.item_left(it)
-        if it.status == "downloading":
-            right = f"{it.progress * 100:.0f}%  {th.fmt_speed(it.speed)}"
-        elif it.status == "processing":
-            right = t("st_processing")
-        if it.status in ("downloading", "processing", "queued") and left is not None:
-            right = f"{right}  ~{th.fmt_time(left)}".strip()
-        elif it.status == "error":
-            right = humanize_error(it.error)[:80]
-        elif it.status in ("done", "skipped"):
-            right = t(f"st_{it.status}")
-        num = f"{it.track.number:02}" if it.track.number else "··"
-        return ft.Container(
-            height=25,
-            content=ft.Row(
-                [
-                    ft.Icon(ITEM_ICON.get(it.status), size=13, color=color),
-                    ft.Text(num, size=10, color=th.FAINT, width=22),
-                    ft.Text(it.track.title, size=11, color=th.TEXT if it.status != "skipped" else th.MUTED,
-                            expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(right, size=10, color=color, max_lines=1),
-                ],
-                spacing=8,
-            ),
-            tooltip=it.error or None,
-        )
+        elif self.rows:
+            self.rows = []  # collapsed: free the rows of long artist pages
+            self.items.controls = []
 
 
 class PushCard:
@@ -225,17 +251,20 @@ class PushCard:
         self.job = task
         self.title = ft.Text("", size=13, color=th.TEXT, font_family=th.FONT_MEDIUM, expand=True, max_lines=1,
                              overflow=ft.TextOverflow.ELLIPSIS)
-        self.chip = ft.Container()
+        self.chip = Chip()
         self.bar = ft.ProgressBar(value=0, height=3, color=th.ACCENT, bgcolor=th.BORDER, border_radius=th.CAPSULE)
         self.info = th.label("", 11)
         self.current = ft.Text("", size=11, color=th.ACCENT, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
         self.error = ft.Text("", size=11, color=th.ERROR, visible=False, selectable=True)
-        self.buttons = ft.Row(spacing=0, tight=True)
+        # created once: a button replaced on every redraw loses the click
+        self.cancel_btn = th.icon_btn(ft.Icons.CLOSE_ROUNDED, self._cancel, tooltip=t("cancel"))
+        self.remove_btn = th.icon_btn(ft.Icons.DELETE_OUTLINE_ROUNDED, self._remove, tooltip=t("remove"))
+        self.buttons = ft.Row([self.cancel_btn, self.remove_btn], spacing=0, tight=True)
         self.view = ft.Container(
             bgcolor=th.SURFACE, border=ft.Border.all(1, th.BORDER), border_radius=th.SHARP,
             padding=ft.Padding.only(left=14, right=8, top=10, bottom=10),
             content=ft.Column(spacing=6, controls=[
-                ft.Row([ft.Icon(KIND_ICON["push"], size=18, color=th.TEXT), self.title, self.chip, self.buttons],
+                ft.Row([ft.Icon(KIND_ICON["push"], size=18, color=th.TEXT), self.title, self.chip.view, self.buttons],
                        spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 self.bar, self.info, self.current, self.error,
             ]),
@@ -246,9 +275,7 @@ class PushCard:
         p = self.job
         self.title.value = t("push_title", name=p.name)
         status = "sending" if p.status == "running" else ("sent" if p.status == "done" else p.status)
-        chip = th.status_chip(t(f"st_{status}"), STATUS_COLOR.get(status, th.MUTED))
-        self.chip.content, self.chip.border = chip.content, chip.border
-        self.chip.border_radius, self.chip.padding = chip.border_radius, chip.padding
+        self.chip.set(t(f"st_{status}"), STATUS_COLOR.get(status, th.MUTED))
         self.bar.value = p.done / p.total if p.total else (None if p.status == "running" else 1)
         elapsed = (p.finished or time.monotonic()) - p.started
         self.info.value = (f"{p.done} / {p.total}   ·   " + t("push_done", sent=p.sent, skipped=p.skipped)
@@ -257,10 +284,8 @@ class PushCard:
         self.current.visible = bool(self.current.value)
         self.error.value = p.error
         self.error.visible = bool(p.error)
-        if p.status == "running":
-            self.buttons.controls = [th.icon_btn(ft.Icons.CLOSE_ROUNDED, self._cancel, tooltip=t("cancel"))]
-        else:
-            self.buttons.controls = [th.icon_btn(ft.Icons.DELETE_OUTLINE_ROUNDED, self._remove, tooltip=t("remove"))]
+        self.cancel_btn.visible = p.status == "running"
+        self.remove_btn.visible = not self.cancel_btn.visible
 
     def _cancel(self, e):
         self.job.cancel = True
@@ -290,6 +315,7 @@ class DownloadsPanel:
             ),
         )
         self.pause_btn = th.capsule(t("pause_all"), self._toggle_pause, icon=ft.Icons.PAUSE_ROUNDED)
+        self._paused_shown = False
         self.summary = th.label("", 11)
         self.body = ft.Stack([self.list, self.empty], expand=True)
         self.view = ft.Column(
@@ -353,14 +379,19 @@ class DownloadsPanel:
         for key in list(self.cards):
             if key not in alive:
                 del self.cards[key]
-        self.list.controls = [c.view for c in entries]
+        views = [c.view for c in entries]
+        if len(views) != len(self.list.controls) or any(a is not b for a, b in zip(views, self.list.controls)):
+            self.list.controls = views
         self.empty.visible = not entries
 
         paused = self.downloader.paused.is_set()
-        new_btn = th.capsule(t("resume_all") if paused else t("pause_all"), self._toggle_pause,
-                             icon=ft.Icons.PLAY_ARROW_ROUNDED if paused else ft.Icons.PAUSE_ROUNDED, selected=paused)
-        self.pause_btn.content, self.pause_btn.bgcolor, self.pause_btn.border = (
-            new_btn.content, new_btn.bgcolor, new_btn.border)
+        if paused != self._paused_shown:
+            self._paused_shown = paused
+            new_btn = th.capsule(t("resume_all") if paused else t("pause_all"), self._toggle_pause,
+                                 icon=ft.Icons.PLAY_ARROW_ROUNDED if paused else ft.Icons.PAUSE_ROUNDED,
+                                 selected=paused)
+            self.pause_btn.content, self.pause_btn.bgcolor, self.pause_btn.border = (
+                new_btn.content, new_btn.bgcolor, new_btn.border)
         jobs = self.downloader.jobs
         active = sum(1 for j in jobs if j.status in ("running", "resolving", "queued"))
         done = sum(j.count("done") for j in jobs)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .paths import IS_WINDOWS
+
 STRINGS: dict[str, dict[str, str]] = {
     # layout
     "library": ("Библиотека", "Library"),
@@ -102,6 +104,12 @@ STRINGS: dict[str, dict[str, str]] = {
     "cookies_error": ("Не удалось прочитать cookies {b}: закройте браузер или выберите другой",
                       "Couldn't read {b} cookies: close the browser or pick another one"),
     "cookies_none": ("Не использовать", "Don't use"),
+    "cookies_file": ("Файл cookies.txt", "cookies.txt file"),
+    "cookies_file_pick": ("Выбрать файл", "Choose file"),
+    "cookies_file_clear": ("Не использовать файл", "Don't use the file"),
+    "cookies_file_hint": ("Файл в формате Netscape, выгруженный расширением браузера. Если выбран, используется вместо браузера.",
+                          "A Netscape-format file exported by a browser extension. When set, it is used instead of the browser."),
+    "cookies_file_title": ("Файл {b}", "File {b}"),
     "cookies_hint": ("Нужны, если YouTube просит «подтвердить, что вы не бот», для 18+ и качества Premium.",
                      "Needed when YouTube asks to “confirm you're not a bot”, for 18+ and Premium quality."),
     "sleep": ("Пауза между треками: {s} с", "Pause between tracks: {s} s"),
@@ -129,7 +137,8 @@ STRINGS: dict[str, dict[str, str]] = {
     "phone_ready": ("Подключён: {model}", "Connected: {model}"),
     "phone_help": ("Включите «Отладку по USB» в настройках разработчика и подключите кабель.",
                    "Enable “USB debugging” in developer options and plug in the cable."),
-    "adb_missing": ("adb не установлен: sudo pacman -S android-tools", "adb is not installed: sudo pacman -S android-tools"),
+    "adb_missing": ("adb не установлен: {cmd}", "adb is not installed: {cmd}"),
+    "bad_address": ("Адрес должен быть вида 192.168.1.5:37000", "The address should look like 192.168.1.5:37000"),
     "push_title": ("На телефон: {name}", "To phone: {name}"),
     "push_done": ("Отправлено {sent}, уже было {skipped}", "Sent {sent}, already there {skipped}"),
     # phone panel
@@ -184,12 +193,17 @@ STRINGS: dict[str, dict[str, str]] = {
     "updated": ("yt-dlp обновлён до {v}. Перезапустите приложение.", "yt-dlp updated to {v}. Restart the app."),
     "update_failed": ("Не удалось обновить: {e}", "Update failed: {e}"),
     "deno_ok": ("JS-движок: Deno найден", "JS runtime: Deno found"),
-    "deno_missing": ("Нет Deno — YouTube может не работать. Установите: sudo pacman -S deno",
-                     "No Deno — YouTube may not work. Install: sudo pacman -S deno"),
-    "mpv_missing": ("Нет mpv для плеера: sudo pacman -S mpv", "No mpv for the player: sudo pacman -S mpv"),
-    "err_mpv_missing": ("Нет mpv: sudo pacman -S mpv", "No mpv: sudo pacman -S mpv"),
+    "deno_missing": ("Нет Deno — YouTube может не работать. Установите: {cmd}",
+                     "No Deno — YouTube may not work. Install: {cmd}"),
+    "mpv_missing": ("Нет mpv для плеера: {cmd}", "No mpv for the player: {cmd}"),
+    "err_mpv_missing": ("Нет mpv: {cmd}", "No mpv: {cmd}"),
     "err_mpv_failed": ("Не удалось запустить mpv", "Could not start mpv"),
-    "ffmpeg_missing": ("Нет FFmpeg: sudo pacman -S ffmpeg", "No FFmpeg: sudo pacman -S ffmpeg"),
+    "ffmpeg_missing": ("Нет FFmpeg: {cmd}", "No FFmpeg: {cmd}"),
+    "ytdlp_builtin": ("встроенный", "built-in"),
+    "ytdlp_reset": ("Вернуть встроенный", "Back to built-in"),
+    "ytdlp_reset_done": ("После перезапуска будет встроенный yt-dlp", "The built-in yt-dlp is used after a restart"),
+    "ytdlp_latest": ("Уже последняя версия", "Already the latest version"),
+    "open_logs": ("Открыть журнал", "Open logs"),
     "hide_panel": ("Скрыть панель (или потяните край)", "Hide panel (or drag its edge)"),
     "show_library": ("Показать библиотеку", "Show library"),
     "show_settings": ("Показать настройки", "Show settings"),
@@ -226,6 +240,26 @@ STRINGS: dict[str, dict[str, str]] = {
     "play_all": ("Слушать", "Play"),
 }
 
+# Where Windows differs from Linux.
+WINDOWS: dict[str, tuple[str, str]] = {
+    "phone_noperm": ("Нет доступа к телефону: установите USB-драйвер (Google USB Driver или от производителя)",
+                     "No access to the phone: install a USB driver (Google USB Driver or the vendor's one)"),
+    "phone_help": ("Включите «Отладку по USB» в настройках разработчика и подключите кабель. Если телефон не виден — нужен USB-драйвер.",
+                   "Enable “USB debugging” in developer options and plug in the cable. If the phone isn't seen, install its USB driver."),
+    "cookies_hint": ("Нужны, если YouTube просит «подтвердить, что вы не бот», для 18+ и качества Premium. "
+                     "Chrome и Edge в Windows шифруют cookies и не дают их прочитать — лучше Firefox или файл cookies.txt.",
+                     "Needed when YouTube asks to “confirm you're not a bot”, for 18+ and Premium quality. "
+                     "On Windows Chrome and Edge encrypt their cookies — use Firefox or a cookies.txt file."),
+    "cookies_error": ("Не удалось прочитать cookies {b}: закройте браузер, выберите Firefox или файл cookies.txt",
+                      "Couldn't read {b} cookies: close the browser, pick Firefox or a cookies.txt file"),
+}
+if IS_WINDOWS:
+    STRINGS.update(WINDOWS)
+
+# strings with {cmd} get the install command of this tool
+_TOOL_OF = {"adb_missing": "adb", "deno_missing": "deno", "mpv_missing": "mpv",
+            "err_mpv_missing": "mpv", "ffmpeg_missing": "ffmpeg"}
+
 _lang = "ru"
 
 
@@ -239,4 +273,13 @@ def t(key: str, **kw) -> str:
     if not pair:
         return key
     text = pair[0] if _lang == "ru" else pair[1]
-    return text.format(**kw) if kw else text
+    if key in _TOOL_OF and "cmd" not in kw:
+        from .tools import install_hint
+
+        kw["cmd"] = install_hint(_TOOL_OF[key])
+    if not kw:
+        return text
+    try:
+        return text.format(**kw)
+    except (KeyError, IndexError, ValueError):
+        return text
