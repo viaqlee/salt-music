@@ -1,0 +1,6 @@
+flet==1.0.5
+flet-desktop==1.0.5
+yt-dlp[default]
+ytmusicapi==1.12.3
+mutagen==1.48.1
+pillow==13.0.0
