@@ -9,7 +9,7 @@ from typing import Callable
 
 import flet as ft
 
-from .. import desktop, naming
+from .. import desktop, naming, tools
 from ..downloader import cookie_file_status, cookie_status
 from ..paths import IS_WINDOWS
 from ..config import BROWSERS, DEFAULT_FILENAME, DEFAULT_TEMPLATES, FORMATS, KINDS, Settings
@@ -153,9 +153,18 @@ class SettingsPanel:
                       inactive_color=th.BORDER, on_change=self._on_sleep, on_change_end=self._on_sleep_end),
         ])
 
+        # --- external programs
+        self.tool_rows = ft.Column(spacing=12)
+        programs = th.section(t("sec_tools"), [
+            th.label(t("tools_hint"), 10),
+            self.tool_rows,
+            ft.Row([th.capsule(t("tools_rescan"), lambda e: self._rescan_tools(), icon=ft.Icons.SEARCH_ROUNDED)]),
+            th.label(t("tools_ytdlp_hint"), 10, th.FAINT),
+        ])
+        self.show_tools()
+
         # --- system
         self.ytdlp_text = th.label("", 11, th.TEXT)
-        self.deno_text = th.label("", 10)
         self.ytdlp_reset = th.capsule(t("ytdlp_reset"), lambda e: self._reset_ytdlp(),
                                       icon=ft.Icons.SETTINGS_BACKUP_RESTORE_ROUNDED)
         system = th.section(t("sec_system"), [
@@ -168,7 +177,6 @@ class SettingsPanel:
             ft.Row([self.ytdlp_reset,
                     th.capsule(t("open_logs"), lambda e: actions["open_logs"](), icon=ft.Icons.ARTICLE_ROUNDED)],
                    spacing=6, wrap=True, run_spacing=6),
-            self.deno_text,
         ])
         behaviour = th.section(t("sec_behaviour"), [
             ft.Row([ft.Text(t("background_on_close"), size=12, color=th.TEXT, expand=True),
@@ -188,7 +196,7 @@ class SettingsPanel:
             "main": ft.ListView(expand=True, spacing=10, padding=ft.Padding.only(right=8, bottom=12),
                                 controls=[folder, fmt, layout, genre, source]),
             "more": ft.ListView(expand=True, spacing=10, padding=ft.Padding.only(right=8, bottom=12),
-                                controls=[access, behaviour, system]),
+                                controls=[access, programs, behaviour, system]),
         }
         self.tabs = ft.Row(spacing=6, tight=True)
         self.view = ft.Column(
@@ -237,18 +245,65 @@ class SettingsPanel:
         self.s.save()
         self.on_change()
 
-    def set_system(self, ytdlp: str, deno_ok: bool, ffmpeg_ok: bool, mpv_ok: bool = True,
-                   overlay: bool = False) -> None:
+    def set_system(self, ytdlp: str, overlay: bool = False) -> None:
         """overlay: an updated yt-dlp downloaded by the app is (or will be after restart) in use."""
         self.ytdlp_text.value = t("ytdlp_version", v=ytdlp)
         self.ytdlp_reset.visible = overlay
-        msgs = [t("deno_ok") if deno_ok else t("deno_missing")]
-        if not ffmpeg_ok:
-            msgs.append(t("ffmpeg_missing"))
-        if not mpv_ok:
-            msgs.append(t("mpv_missing"))
-        self.deno_text.value = "\n".join(msgs)
-        self.deno_text.color = th.MUTED if deno_ok and ffmpeg_ok and mpv_ok else th.ERROR
+        self.show_tools()
+
+    # ---------- external programs ----------
+
+    TOOL_TITLES = {tools.FFMPEG: "FFmpeg", tools.DENO: "Deno", tools.MPV: "mpv", tools.ADB: "adb"}
+
+    def show_tools(self) -> None:
+        """One row per program: where it was found, or why not, and buttons to choose it by hand."""
+        rows = []
+        for name in tools.CONFIGURABLE:
+            raw, custom = tools.custom_status(name)
+            path = tools.find(name)
+            if raw and not custom:
+                status, color = t("tool_bad_path", p=raw), th.ERROR
+            elif path:
+                status, color = (t("tool_custom", p=path) if custom else path), th.MUTED
+            else:
+                status, color = t(f"{name}_missing"), th.ERROR
+            buttons = [th.capsule(t("tool_pick"), lambda e, n=name: self.page.run_task(self._pick_tool, n),
+                                  icon=ft.Icons.FILE_OPEN_ROUNDED)]
+            if raw:
+                buttons.append(th.capsule(t("tool_auto"), lambda e, n=name: self._set_tool(n, ""),
+                                          icon=ft.Icons.AUTO_FIX_HIGH_ROUNDED))
+            rows.append(ft.Column([
+                ft.Row([th.label(self.TOOL_TITLES[name], 12, th.TEXT, width=70),
+                        ft.Container(ft.Text(status, size=10, color=color, selectable=True, max_lines=3,
+                                             overflow=ft.TextOverflow.ELLIPSIS), expand=True)],
+                       vertical_alignment=ft.CrossAxisAlignment.START),
+                ft.Row(buttons, spacing=6, wrap=True, run_spacing=6),
+            ], spacing=4))
+        self.tool_rows.controls = rows
+        self._refresh(self.tool_rows)
+
+    async def _pick_tool(self, name: str) -> None:
+        kw = ({"file_type": ft.FilePickerFileType.CUSTOM, "allowed_extensions": ["exe"]} if IS_WINDOWS
+              else {"file_type": ft.FilePickerFileType.ANY})
+        files = await self.picker.pick_files(dialog_title=t("tool_pick_title", n=self.TOOL_TITLES[name]), **kw)
+        path = files[0].path if files else None
+        if path:
+            self._set_tool(name, path)
+
+    def _set_tool(self, name: str, path: str) -> None:
+        if path:
+            self.s.tool_paths[name] = path
+        else:
+            self.s.tool_paths.pop(name, None)
+        tools.set_custom(self.s.tool_paths)
+        self._changed()
+        self.show_tools()
+        self.actions["tools_changed"]()
+
+    def _rescan_tools(self) -> None:
+        tools.refresh()
+        self.show_tools()
+        self.actions["tools_changed"]()
 
     # ---------- folder ----------
 

@@ -53,12 +53,47 @@ def activate(root: Path = PACKAGES_DIR) -> str | None:
     current = root / name
     if not _valid_name(name) or not (current / "yt_dlp").is_dir():
         return None
+    builtin = builtin_version()
+    if builtin and not is_newer(name, builtin):
+        # the app itself was updated and brought a newer yt-dlp: the download is obsolete
+        reset(root)
+        shutil.rmtree(current, ignore_errors=True)
+        return None
     for old in root.iterdir():
         if old.is_dir() and old.name != current.name:
             shutil.rmtree(old, ignore_errors=True)
     if str(current) not in sys.path:
         sys.path.insert(0, str(current))
     return name
+
+
+def builtin_version() -> str | None:
+    """Version of the yt-dlp shipped with the program, read without importing it.
+
+    Call before the downloaded one is put on sys.path, or its metadata wins.
+    """
+    import importlib.metadata
+    import importlib.util
+
+    try:
+        return importlib.metadata.version("yt-dlp")  # the packed .exe carries it (--copy-metadata)
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    try:
+        spec = importlib.util.find_spec("yt_dlp")
+        origin = Path(spec.origin) if spec and spec.origin else None
+        text = (origin.parent / "version.py").read_text("utf-8") if origin else ""
+    except (ImportError, OSError, ValueError):
+        return None
+    m = re.search(r"^__version__\s*=\s*['\"]([^'\"]+)['\"]", text, re.M)
+    return m.group(1) if m else None
+
+
+def is_newer(a: str, b: str) -> bool:
+    """a > b for yt-dlp style versions (2026.10.26, 2026.10.26.1)."""
+    def parts(v: str) -> tuple[int, ...]:
+        return tuple(int(x) for x in re.findall(r"\d+", v))
+    return parts(a) > parts(b)
 
 
 def active_version(root: Path = PACKAGES_DIR) -> str | None:

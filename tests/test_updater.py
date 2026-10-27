@@ -83,3 +83,19 @@ def test_requires_python():
     assert updater._requires_ok(">=3.10")
     assert not updater._requires_ok(">=4.0")
     assert updater._requires_ok(None)
+
+
+def test_obsolete_download_dropped_after_app_update(tmp_path, monkeypatch):
+    v = updater.update("2026.1.1", root=tmp_path, fetch=_fake_pypi(version="2026.1.2"))
+    monkeypatch.setattr(updater, "builtin_version", lambda: "2026.5.5")  # the new app brought a newer one
+    path_before = list(sys.path)
+    assert updater.activate(tmp_path) is None
+    assert sys.path == path_before
+    assert updater.active_version(tmp_path) is None
+    assert not (tmp_path / v).exists()
+
+
+def test_builtin_version_and_compare():
+    assert updater.builtin_version()
+    assert updater.is_newer("2026.10.26.1", "2026.10.26")
+    assert not updater.is_newer("2026.10.26", "2026.10.26")

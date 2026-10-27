@@ -3,7 +3,7 @@
 ; Classic wizard, per-user install (no administrator rights needed).
 
 #ifndef AppVersion
-  #define AppVersion "0.2.1"
+  #define AppVersion "0.3.0"
 #endif
 #define AppName "Salt Music"
 #define AppExe "SaltMusic.exe"
@@ -87,6 +87,8 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; AppUserModelID: "
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; an update started from the app itself runs silently with /RELAUNCH=1
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: RelaunchAfterUpdate
 
 [UninstallDelete]
 ; versions of yt-dlp downloaded by the app live next to the user data, see [Code]
@@ -102,6 +104,11 @@ begin
     FileExists(Local + '\Microsoft\WinGet\Links\' + Name + '.exe') or
     FileExists(Local + '\SaltMusic\bin\' + Name + '.exe') or
     (FileSearch(Name + '.exe', GetEnv('PATH')) <> '');
+end;
+
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
 end;
 
 function BundledTool(Name: String): Boolean;

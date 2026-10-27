@@ -11,7 +11,7 @@ from pathlib import Path
 
 import flet as ft
 
-from .. import __version__, adb, desktop, i18n, library, links, metadata, tools, updater
+from .. import __version__, adb, app_update, desktop, i18n, library, links, metadata, tools, updater
 from ..config import Settings
 from ..downloader import Downloader
 from ..i18n import t
@@ -32,6 +32,7 @@ class App:
     def __init__(self, page: ft.Page):
         self.page = page
         self.settings = Settings.load()
+        tools.set_custom(self.settings.tool_paths)
         i18n.set_language(self.settings.language)
         self.dirty = True
         self.lib_dirty = True
@@ -45,6 +46,11 @@ class App:
         self.downloader = Downloader(self.settings, self._on_job_change, self._ask_genre, self._on_file)
         self.lib_artists: list[library.LibArtist] = []
         self.hidden = False  # window closed while downloading: we keep working in the background
+        # updates: "idle" | "checking" | "downloading"; what was found stays until installed
+        self._upd_state = "idle"
+        self._upd_release: app_update.Release | None = None
+        self._upd_ytdlp: str | None = None
+        self._upd_progress = 0
         self._build()
 
     # ---------- layout ----------
@@ -57,9 +63,12 @@ class App:
             content_padding=ft.Padding.symmetric(horizontal=18, vertical=14),
         )
         self.link_error = ft.Text("", size=11, color=th.ERROR, visible=False)
+        self.update_btn = th.capsule(t("upd_check"), self._on_update_click, icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED)
+        self._paint_update()
         input_row = ft.Container(
             padding=ft.Padding.only(left=16, right=16, bottom=16, top=4),
             content=ft.Column([
+                ft.Row([self.update_btn]),
                 ft.Row([self.link, th.circle_button(ft.Icons.ARROW_DOWNWARD_ROUNDED, self._submit, size=48,
                                                     tooltip=t("download"))], spacing=10),
                 self.link_error,
@@ -78,6 +87,7 @@ class App:
                 "open_logs": self._open_logs,
                 "clear_archive": self._clear_archive,
                 "cookies_ok": self.downloader.retry_blocked,
+                "tools_changed": self._on_tools_changed,
             },
             on_close=lambda: self.right_bar.set_open(False),
         )
@@ -193,7 +203,8 @@ class App:
     # ---------- background loop ----------
 
     async def loop(self) -> None:
-        state = {"lib": 0.0, "phone": 0.0}
+        state = {"lib": 0.0, "phone": 0.0, "update": time.monotonic() - self.UPDATE_EVERY + self.UPDATE_FIRST}
+        threading.Thread(target=app_update.cleanup, daemon=True, name="salt-update-cleanup").start()
         while True:
             await asyncio.sleep(0.3)
             try:
@@ -226,6 +237,9 @@ class App:
         if now - state["phone"] > 5:
             state["phone"] = now
             await self._check_phone(False)
+        if now - state["update"] > self.UPDATE_EVERY:
+            state["update"] = now
+            self._check_updates(manual=False)
         self._auto_push()
         return False
 
@@ -676,9 +690,184 @@ class App:
 
     def _show_system(self, version: str | None = None) -> None:
         tools.refresh()  # the user may have installed something meanwhile
-        self.settings_panel.set_system(version or self._ytdlp_version(), tools.available(tools.DENO),
-                                       tools.available(tools.FFMPEG), tools.available(tools.MPV),
+        self.settings_panel.set_system(version or self._ytdlp_version(),
                                        overlay=updater.active_version() is not None)
+
+    # ---------- updates of the app and yt-dlp ----------
+
+    UPDATE_FIRST = 5.0  # seconds after start
+    UPDATE_EVERY = 6 * 3600.0
+
+    def _paint_update(self) -> None:
+        """The button above the link field shows what is going on with updates."""
+        icon, text = self.update_btn.content.controls
+        found = self._upd_release or self._upd_ytdlp
+        if self._upd_state == "downloading":
+            label, hot = t("upd_downloading", p=self._upd_progress), True
+        elif self._upd_state == "checking":
+            label, hot = t("upd_checking"), False
+        elif self._upd_release:
+            label, hot = t("upd_available", v=self._upd_release.version), True
+        elif self._upd_ytdlp:
+            label, hot = t("upd_ytdlp_available", v=self._upd_ytdlp), True
+        else:
+            label, hot = t("upd_check"), False
+        text.value = label
+        fg = th.BG if hot else th.TEXT
+        icon.color = text.color = fg
+        icon.name = ft.Icons.DOWNLOADING_ROUNDED if self._upd_state == "downloading" else (
+            ft.Icons.NEW_RELEASES_ROUNDED if found else ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED)
+        self.update_btn.bgcolor = th.ACCENT if hot else th.SURFACE_HI
+        self.update_btn.border = ft.Border.all(1, th.ACCENT if hot else th.BORDER)
+        self.update_btn.tooltip = t("upd_tooltip", v=__version__)
+
+    async def _repaint_update(self) -> None:
+        self._paint_update()
+        try:
+            self.update_btn.update()
+        except RuntimeError:
+            pass  # rebuilt meanwhile (language switch): the new button is painted already
+
+    def _on_update_click(self, e) -> None:
+        if self._upd_state != "idle":
+            return
+        if self._upd_release or self._upd_ytdlp:
+            self._confirm_update()
+        else:
+            self._check_updates(manual=True)
+
+    def _check_updates(self, manual: bool) -> None:
+        if self._upd_state != "idle":
+            return
+        self._upd_state = "checking"
+        self._paint_update()
+        if manual:
+            self.update_btn.update()
+
+        def run():
+            release = ytdlp = error = None
+            try:
+                release = app_update.check()
+            except Exception as err:
+                error = err
+            try:
+                latest, _, _ = updater.latest("yt-dlp")
+                if updater.is_newer(latest, updater.active_version() or self._ytdlp_version()):
+                    ytdlp = latest
+            except Exception as err:
+                error = error or err
+            if error:
+                log.info("update check: %s", error)
+            self.page.run_task(self._after_check, release, ytdlp, error, manual)
+
+        threading.Thread(target=run, daemon=True, name="salt-update-check").start()
+
+    async def _after_check(self, release, ytdlp, error, manual: bool) -> None:
+        self._upd_state = "idle"
+        self._upd_release, self._upd_ytdlp = release, ytdlp
+        await self._repaint_update()
+        if not manual:
+            return
+        if release or ytdlp:
+            self._confirm_update()
+        elif error:
+            self._snack(t("upd_check_failed", e=str(error)[:200]), error=True)
+        else:
+            self._snack(t("upd_none", v=__version__))
+
+    _NOTES_STYLE = ft.MarkdownStyleSheet(
+        p_text_style=ft.TextStyle(size=11, color=th.MUTED),
+        code_text_style=ft.TextStyle(size=11, color=th.ACCENT),
+        **{f"h{i}_text_style": ft.TextStyle(size=12, color=th.TEXT, font_family=th.FONT_BOLD) for i in (1, 2, 3)},
+    )
+
+    def _confirm_update(self) -> None:
+        release, ytdlp = self._upd_release, self._upd_ytdlp
+        kind = app_update.install_kind()
+        lines: list[ft.Control] = []
+        if release:
+            lines.append(ft.Text(t("upd_app", v=release.version, cur=__version__), size=12, color=th.TEXT))
+            if release.notes.strip():
+                lines.append(ft.Container(
+                    ft.Column([ft.Markdown(release.notes, selectable=True, md_style_sheet=self._NOTES_STYLE)],
+                              scroll=ft.ScrollMode.AUTO),
+                    height=220, bgcolor=th.PANEL, border=ft.Border.all(1, th.BORDER), border_radius=th.SHARP,
+                    padding=10))
+            lines.append(th.label(t("upd_how_" + (kind or "manual")), 11))
+        if ytdlp and not (release and kind):  # a new app brings its own yt-dlp
+            lines.append(ft.Text(t("upd_ytdlp", v=ytdlp), size=12, color=th.TEXT))
+        busy = self.downloader.busy or any(p.status == "running" for p in self.downloads.pushes)
+        if release and kind and busy:
+            lines.append(th.label(t("upd_busy"), 11, th.ERROR))
+
+        actions = [ft.TextButton(t("cancel"), on_click=lambda e: self.page.pop_dialog())]
+        if release and not kind:
+            actions.append(ft.TextButton(t("upd_open_page"), on_click=lambda e: self._open_release(release)))
+        if (release and kind) or ytdlp:
+            actions.append(ft.TextButton(t("upd_install"), on_click=lambda e: self._install_updates(kind)))
+        self.page.show_dialog(ft.AlertDialog(
+            title=ft.Text(t("upd_title"), size=14, font_family=th.FONT_BOLD),
+            content=ft.Column(lines, spacing=10, tight=True, width=480),
+            bgcolor=th.SURFACE, shape=ft.RoundedRectangleBorder(radius=th.SHARP), actions=actions,
+        ))
+
+    def _open_release(self, release: app_update.Release) -> None:
+        self.page.pop_dialog()
+        self.page.run_task(self.page.launch_url, release.page)
+
+    def _install_updates(self, kind: str | None) -> None:
+        self.page.pop_dialog()
+        release = self._upd_release if kind else None
+        ytdlp = None if release else self._upd_ytdlp
+        self._upd_state, self._upd_progress = "downloading", 0
+        self._paint_update()
+        self.update_btn.update()
+
+        def progress(fraction: float) -> None:
+            pct = int(fraction * 100)
+            if pct != self._upd_progress:
+                self._upd_progress = pct
+                self.page.run_task(self._repaint_update)
+
+        def run():
+            try:
+                if release:
+                    path = app_update.download(release, kind, progress=progress)
+                    self.page.run_task(self._restart_into, path, kind)
+                    return
+                if ytdlp:
+                    v = updater.update(updater.active_version() or self._ytdlp_version())
+                    self.page.run_task(self._after_ytdlp_update, v)
+            except Exception as err:
+                log.warning("update failed: %s", err)
+                self.page.run_task(self._update_failed, str(err)[:200])
+
+        threading.Thread(target=run, daemon=True, name="salt-update").start()
+
+    async def _restart_into(self, installer: Path, kind: str) -> None:
+        try:
+            app_update.launch(installer, kind)
+        except Exception as err:
+            await self._update_failed(str(err)[:200])
+            return
+        await self.quit()
+
+    async def _after_ytdlp_update(self, version: str | None) -> None:
+        self._upd_state, self._upd_ytdlp = "idle", None
+        await self._repaint_update()
+        if version:
+            self._show_system(version)
+            self.settings_panel.view.update()
+        self._snack(t("updated", v=version) if version else t("ytdlp_latest"))
+
+    async def _update_failed(self, message: str) -> None:
+        self._upd_state = "idle"
+        await self._repaint_update()
+        self._snack(t("update_failed", e=message), error=True)
+
+    def _on_tools_changed(self) -> None:
+        """A program was chosen by hand or found again: the phone check picks it up at once."""
+        self.page.run_task(self._check_phone, False)
 
     def _update_ytdlp(self) -> None:
         """Download the newest yt-dlp next to the app (no pip in the packed .exe)."""

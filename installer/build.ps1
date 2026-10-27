@@ -42,7 +42,7 @@ $FileVersion = ($Parts[0..3] -join '.')
     --product-version $Version --file-version $FileVersion `
     --company-name 'Salt Music' --copyright 'Salt Music' `
     --distpath dist -y `
-    -- --collect-all yt_dlp_ejs --collect-data ytmusicapi --collect-submodules yt_dlp --noconfirm
+    -- --collect-all yt_dlp_ejs --collect-data ytmusicapi --collect-submodules yt_dlp --copy-metadata yt-dlp --noconfirm
 if ($LASTEXITCODE) { throw 'flet pack failed' }
 
 if ($BundleTools) {

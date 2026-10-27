@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import APP_NAME  # noqa: F401  (kept importable from here)
 from .paths import CONFIG_DIR, DATA_DIR, IS_WINDOWS, default_music_dir
+from .tools import CONFIGURABLE
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,8 @@ class Settings:
     right_width: int = 360
     left_open: bool = True
     right_open: bool = True
+    # user-chosen programs: {"ffmpeg": path to the file or its folder, ...}; empty = look it up
+    tool_paths: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":
@@ -95,6 +98,8 @@ class Settings:
         # Keep templates complete even if the file is from an older version.
         s.templates = {**DEFAULT_TEMPLATES,
                        **{k: v for k, v in s.templates.items() if k in KINDS and isinstance(v, str) and v.strip()}}
+        s.tool_paths = {k: v.strip() for k, v in s.tool_paths.items()
+                        if k in CONFIGURABLE and isinstance(v, str) and v.strip() and len(v) < 1024}
         if not s.filename_template.strip():
             s.filename_template = DEFAULT_FILENAME
         if s.audio_format not in FORMATS:

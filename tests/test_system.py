@@ -135,3 +135,48 @@ def test_tool_installed_later_is_found(monkeypatch, tmp_path):
         assert tools.find(tools.MPV) == str(exe)
     finally:
         tools.refresh()
+
+
+def test_tool_chosen_by_hand(monkeypatch, tmp_path):
+    exe_name = lambda n: n + ".exe" if sys.platform == "win32" else n  # noqa: E731
+    monkeypatch.setattr(tools, "search_dirs", lambda: [])
+    monkeypatch.setenv("PATH", "")
+    folder = tmp_path / "my ffmpeg"
+    (folder / "bin").mkdir(parents=True)
+    ffmpeg, ffprobe = folder / "bin" / exe_name("ffmpeg"), folder / "bin" / exe_name("ffprobe")
+    for f in (ffmpeg, ffprobe):
+        f.write_text("")
+        f.chmod(0o755)
+    try:
+        tools.set_custom({"ffmpeg": str(ffmpeg)})
+        assert tools.find(tools.FFMPEG) == str(ffmpeg)
+        assert tools.find(tools.FFPROBE) == str(ffprobe)  # follows ffmpeg
+        tools.set_custom({"ffmpeg": str(folder)})  # a folder works too, bin inside is looked into
+        assert tools.find(tools.FFMPEG) == str(ffmpeg)
+        tools.set_custom({"ffmpeg": str(tmp_path / "gone.exe")})
+        assert tools.custom_status(tools.FFMPEG) == (str(tmp_path / "gone.exe"), None)
+        assert tools.find(tools.FFMPEG) is None
+        tools.set_custom({"ffmpeg": "relative/ffmpeg", "rm": "/bin/rm"})  # relative and unknown: ignored
+        assert tools.custom_status(tools.FFMPEG)[1] is None
+        assert "rm" not in tools._custom
+    finally:
+        tools.set_custom({})
+
+
+def test_winget_package_folders(tmp_path):
+    deep = tmp_path / "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe" / "ffmpeg-8.0-full_build" / "bin"
+    deep.mkdir(parents=True)
+    (deep / "ffmpeg.exe").write_text("")
+    too_deep = tmp_path / "Other" / "a" / "b" / "c" / "d"
+    too_deep.mkdir(parents=True)
+    (too_deep / "adb.exe").write_text("")
+    assert tools._winget_package_dirs(tmp_path) == [deep]
+    assert tools._winget_package_dirs(tmp_path / "missing") == []
+
+
+def test_settings_keep_only_known_tools():
+    from salt_music.config import Settings
+
+    s = Settings.from_dict({"tool_paths": {"ffmpeg": " /opt/ff/ffmpeg ", "evil": "/bin/sh", "adb": 5, "mpv": ""}})
+    assert s.tool_paths == {"ffmpeg": "/opt/ff/ffmpeg"}
+    assert Settings.from_dict({"tool_paths": "x"}).tool_paths == {}
