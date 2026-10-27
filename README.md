@@ -1,29 +1,40 @@
-# Salt Music для Windows
+# Salt Music
 
-Та же Salt Music: скачивает треки, альбомы и дискографии с YouTube / YouTube Music
-с тегами и обложками, раскладывает по папкам, играет и отправляет музыку на
-Android-телефон через adb. Код общий для Windows и Linux, всё платформенное лежит
-в `salt_music/desktop/`, `paths.py`, `proc.py` и `tools.py`.
+Загрузчик музыки с YouTube / YouTube Music для Windows и Linux. Скачивает треки,
+альбомы, EP, синглы и целые страницы исполнителей с тегами, обложками и жанрами.
+Есть плеер и отправка на телефон через adb.
 
-## Установка (для пользователя)
+Код один для обеих систем. Всё, что зависит от системы, лежит в
+`salt_music/desktop/`, `paths.py`, `proc.py` и `tools.py`.
 
-Запустите `SaltMusic-Setup-<версия>.exe`. Права администратора не нужны: программа
-ставится в `%LOCALAPPDATA%\Programs\SaltMusic`. На странице задач установщик
-предлагает доставить через winget то, чего нет на компьютере:
+Нужные программы:
 
-| Программа | Зачем | winget |
-|---|---|---|
-| FFmpeg | конвертация звука, обязательно | `Gyan.FFmpeg` |
-| Deno | YouTube без него не отдаёт ссылки | `DenoLand.Deno` |
-| Android Platform Tools | отправка на телефон | `Google.PlatformTools` |
-| mpv | встроенный плеер | `shinchiro.mpv` |
+- **ffmpeg** — извлечение звука и конвертация;
+- **deno** — нужен yt-dlp для расшифровки подписей YouTube;
+- **mpv** — встроенный плеер;
+- **adb** — отправка на телефон, необязательно.
 
-Если программу поставить позже, Salt Music сама найдёт её в течение примерно
-10 секунд, перезапуск не нужен.
+## Windows
 
-## Запуск из исходников
+### Установка
 
-Нужен Python 3.11+ (проверено на 3.14).
+Скачайте `SaltMusic-Setup-<версия>.exe` из [релизов](../../releases) и запустите.
+Права администратора не нужны, программа ставится в `%LOCALAPPDATA%\Programs\SaltMusic`.
+Установщик предложит поставить через winget то, чего нет на компьютере:
+
+| Программа | winget |
+|---|---|
+| FFmpeg | `Gyan.FFmpeg` |
+| Deno | `DenoLand.Deno` |
+| Android Platform Tools (adb) | `Google.PlatformTools` |
+| mpv | `shinchiro.mpv` |
+
+Есть и вариант без установки: `SaltMusic-<версия>-portable.zip`. Программу, поставленную
+позже, Salt Music найдёт сама примерно за 10 секунд, перезапуск не нужен.
+
+### Из исходников
+
+Нужен Python 3.11+.
 
 ```bat
 py -m venv .venv
@@ -31,64 +42,95 @@ py -m venv .venv
 run.bat
 ```
 
-## Сборка установщика
+### Сборка установщика
 
-Нужны Python и [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`ISCC.exe` в PATH
-или в стандартной папке).
+Нужны Python и [Inno Setup 6](https://jrsoftware.org/isinfo.php).
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File installer\build.ps1
-# инструменты внутрь пакета (ffmpeg, deno, adb, mpv), с проверкой sha256 где она опубликована:
+# ffmpeg, deno, adb и mpv внутрь пакета, с проверкой sha256 там, где она опубликована:
 powershell -ExecutionPolicy Bypass -File installer\build.ps1 -BundleTools
 ```
 
-Результат: `dist\SaltMusic-Setup-<версия>.exe`.
+Релизы собирает GitHub Actions (`.github/workflows/release-windows.yml`) по тегу `v<версия>`.
 
-## Где что лежит
+## Linux
+
+### Зависимости системы
+
+```
+sudo pacman -S ffmpeg mpv deno android-tools zenity
+```
+
+**zenity** нужен для диалога выбора папки.
+
+### Установка
+
+Одним файлом: соберите установщик и запустите его, двойным кликом или из терминала.
+
+```
+installer/build.sh
+./dist/SaltMusic-Setup-<версия>.run
+```
+
+Мастер:
+
+- установит программу в `~/.local/share/salt-music/app`;
+- проверит системные пакеты и предложит поставить недостающие через pacman;
+- создаст ярлык в меню и команду `salt-music`.
+
+Удаление: пункт меню «Uninstall Salt Music» или `SaltMusic-Setup-<версия>.run --uninstall`.
+Без вопросов: `--unattended`.
+
+Вручную, для разработки (нужен Python 3.11+):
+
+```
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+./salt-music.sh
+```
+
+## Если YouTube пишет «подтвердите, что вы не бот»
+
+В настройках → «Прочее» выберите браузер, где вы вошли в YouTube: cookies будут браться оттуда.
+
+На Windows Chrome и Edge шифруют cookies и держат их базу открытой, поэтому yt-dlp часто
+не может их прочитать. Подойдёт Firefox, или файл `cookies.txt`: выгрузите его
+расширением вроде «Get cookies.txt LOCALLY» и выберите в «Файл cookies.txt».
+Выбранный файл важнее браузера.
+
+Программа смотрит только имена cookies, значения никуда не выводятся и не пишутся в журнал.
+
+## Где что хранится
 
 | Что | Windows | Linux |
 |---|---|---|
-| Настройки | `%APPDATA%\SaltMusic\settings.json` | `~/.config/salt-music/` |
-| История, очередь, архив, жанры | `%LOCALAPPDATA%\SaltMusic\` | `~/.local/share/salt-music/` |
-| Журнал | `%LOCALAPPDATA%\SaltMusic\logs\salt-music.log` | `…/salt-music/logs/` |
-| Обновления yt-dlp | `%LOCALAPPDATA%\SaltMusic\packages\` | `…/salt-music/packages/` |
-| Музыка по умолчанию | папка «Музыка» пользователя | `~/Music` |
+| Настройки | `%APPDATA%\SaltMusic\settings.json` | `~/.config/salt-music/settings.json` |
+| Архив загрузок, история, жанры, очередь | `%LOCALAPPDATA%\SaltMusic\` | `~/.local/share/salt-music/` |
+| Журнал | `%LOCALAPPDATA%\SaltMusic\logs\` | `~/.local/share/salt-music/logs/` |
+| Скачанные версии yt-dlp | `%LOCALAPPDATA%\SaltMusic\packages\` | `~/.local/share/salt-music/packages/` |
 
-`SALT_MUSIC_HOME=<папка>` переносит настройки и данные в `<папка>\config` и
-`<папка>\data`. Так удобно держать отдельный тестовый профиль.
-
-## Cookies на Windows
-
-Chrome и Edge шифруют cookies ключом, привязанным к самому браузеру, и держат базу
-открытой, пока браузер запущен. yt-dlp часто не может их прочитать. Варианты:
-
-1. **Firefox**: работает, даже когда он открыт.
-2. **Файл cookies.txt**: выгрузите расширением вроде «Get cookies.txt LOCALLY» и
-   выберите его в настройках → «Прочее» → «Файл cookies.txt». Если файл выбран,
-   он важнее браузера.
-
-Программа проверяет только имена cookies (вошли вы или нет), значения никуда не
-выводятся и не пишутся в журнал.
+Переменная `SALT_MUSIC_HOME=<папка>` переносит всё в `<папка>/config` и `<папка>/data`.
+Так удобно держать отдельный тестовый профиль.
 
 ## Обновление yt-dlp
 
-Кнопка «Обновить yt-dlp» скачивает свежие колёса `yt-dlp` и `yt-dlp-ejs` с PyPI,
-сверяет sha256, распаковывает их с проверкой путей в отдельную папку и подключает
-при следующем запуске. Установленная программа при этом не меняется. «Вернуть
-встроенный» удаляет скачанную версию.
+Кнопка «Обновить yt-dlp» в настройках скачивает свежие `yt-dlp` и `yt-dlp-ejs` с PyPI,
+сверяет sha256 и подключает их со следующего запуска. Сама программа при этом не меняется.
+«Вернуть встроенный» откатывает обновление.
 
 ## Тесты
 
-```bash
+```
 .venv/bin/python -m pytest -q          # Linux
 .venv\Scripts\python -m pytest -q      # Windows
 ```
 
-Тесты используют временный профиль и не трогают настоящие настройки. Тесты с
-настоящим аудио пропускаются без ffmpeg, а тест плеера пропускается без mpv.
+Тесты работают во временном профиле и не трогают настоящие настройки. Тесты с настоящим
+аудио пропускаются без ffmpeg, тест плеера пропускается без mpv.
 
-Проверка интерфейса в браузере (отдельный профиль в `.web-profile`):
+Проверка интерфейса в браузере:
 
-```bash
+```
 SALT_WEB_PORT=8551 SALT_MUSIC_HOME=.web-profile .venv/bin/python main.py
 ```
