@@ -113,9 +113,7 @@ class App:
         logo = ft.Container(
             padding=ft.Padding.only(left=14, right=14, top=14, bottom=10),
             content=ft.Row([
-                ft.Container(width=30, height=30, shape=ft.BoxShape.CIRCLE, bgcolor=th.ACCENT,
-                             alignment=ft.Alignment.CENTER,
-                             content=ft.Text("S", size=15, color=th.BG, font_family=th.FONT_BOLD)),
+                ft.Image(src="icon.svg", width=30, height=30),
                 ft.Text("SALT", size=15, color=th.TEXT, font_family=th.FONT_BOLD),
                 ft.Text("MUSIC", size=15, color=th.ACCENT, font_family=th.FONT_BOLD),
                 ft.Container(expand=True),

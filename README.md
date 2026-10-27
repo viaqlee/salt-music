@@ -1,3 +1,5 @@
+<img src="assets/icon.svg" width="96" alt="">
+
 # Salt Music
 
 Загрузчик музыки с YouTube / YouTube Music для Windows и Linux. Скачивает треки,

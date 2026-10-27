@@ -293,6 +293,7 @@ Comment=Download music from YouTube Music with tags and covers
 Exec="$PREFIX/salt-music"
 Icon=salt-music
 Terminal=false
+StartupWMClass=com.appveyor.flet
 Categories=AudioVideo;Audio;
 Keywords=youtube;music;download;yt-dlp;"
     if grep -qx menu <<< "$CHOSEN"; then

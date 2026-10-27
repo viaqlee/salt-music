@@ -3,7 +3,7 @@
 ; Classic wizard, per-user install (no administrator rights needed).
 
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #define AppVersion "0.3.1"
 #endif
 #define AppName "Salt Music"
 #define AppExe "SaltMusic.exe"
@@ -31,6 +31,7 @@ MinVersion=10.0
 OutputDir=..\dist
 OutputBaseFilename=SaltMusic-Setup-{#AppVersion}
 SetupIconFile=..\assets\icon.ico
+WizardSmallImageFile=wizard-small-55.bmp,wizard-small-110.bmp
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 Compression=lzma2/max
