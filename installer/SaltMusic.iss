@@ -3,7 +3,7 @@
 ; Classic wizard, per-user install (no administrator rights needed).
 
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 #define AppName "Salt Music"
 #define AppExe "SaltMusic.exe"
@@ -101,7 +101,7 @@ begin
   Result :=
     FileExists(Local + '\Microsoft\WinGet\Links\' + Name + '.exe') or
     FileExists(Local + '\SaltMusic\bin\' + Name + '.exe') or
-    FileSearch(Name + '.exe', GetEnv('PATH')) <> '';
+    (FileSearch(Name + '.exe', GetEnv('PATH')) <> '');
 end;
 
 function BundledTool(Name: String): Boolean;
