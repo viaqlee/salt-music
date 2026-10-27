@@ -53,9 +53,10 @@ jobs:
         shell: pwsh
         run: |
           # collect first: the sums file must not be listed (and locked) while it is written
-          $sums = Get-ChildItem dist -File -Exclude SHA256SUMS.txt | ForEach-Object {
+          $sums = Get-ChildItem dist\* -File -Exclude SHA256SUMS.txt | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           }
+          if (-not $sums) { throw "nothing to hash" }
           $sums | Out-File -Encoding ascii dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
 
